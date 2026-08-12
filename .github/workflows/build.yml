@@ -50,5 +50,5 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ env.REPO_LC }}:latest
-          build-args: |
-            HF_TOKEN=${{ secrets.HF_TOKEN }}
+          secrets: |
+            "HF_TOKEN=${{ secrets.HF_TOKEN }}"
