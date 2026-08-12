@@ -26,7 +26,7 @@ RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/Comf
          pip3 install --no-cache-dir -r /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt; \
        fi
 
-# Download LTX-2.5 Model Components using Docker Secret Mount
+# Download LTX Model Components using Docker Secret Mount
 RUN --mount=type=secret,id=HF_TOKEN \
     HF_TOKEN=$(cat /run/secrets/HF_TOKEN) && \
     mkdir -p /workspace/ComfyUI/models/diffusion_models \
@@ -51,10 +51,10 @@ RUN --mount=type=secret,id=HF_TOKEN \
     curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
       -o /workspace/ComfyUI/models/vae/ltx-2.5-audio-vae-bf16.safetensors \
       "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors" && \
-    # 4. Latent Upscaler
+    # 4. Latent Spatial Upscaler (Hosted on LTX-2.3 repo)
     curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
       -o /workspace/ComfyUI/models/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
-      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+      "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
 
 # Set up Node dependencies and application files
 COPY package*.json ./
