@@ -44,11 +44,11 @@ RUN --mount=type=secret,id=HF_TOKEN,env=HF_TOKEN \
       -o /workspace/ComfyUI/models/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors \
       "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors"
 
-# 3. Text Encoder B (Gemma 4 E2B - Root Directory Path)
+# 3. Text Encoder B (Gemma 4 12B BF16 mapped to JSON expected filename)
 RUN --mount=type=secret,id=HF_TOKEN,env=HF_TOKEN \
     curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
       -o /workspace/ComfyUI/models/text_encoders/gemma4_e2b_it_bf16.safetensors \
-      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/gemma4_e2b_it_bf16.safetensors"
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
 
 # 4. Video VAE
 RUN --mount=type=secret,id=HF_TOKEN,env=HF_TOKEN \
