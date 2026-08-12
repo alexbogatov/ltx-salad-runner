@@ -67,7 +67,7 @@ RUN --mount=type=secret,id=HF_TOKEN,env=HF_TOKEN \
     curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
       -o /workspace/ComfyUI/models/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
       "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
-      
+
 # Set up Node dependencies and application files
 COPY package*.json ./
 RUN npm install
