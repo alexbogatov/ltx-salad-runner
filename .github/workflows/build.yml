@@ -51,4 +51,4 @@ jobs:
           push: true
           tags: ghcr.io/${{ env.REPO_LC }}:latest
           secrets: |
-            "HF_TOKEN=${{ secrets.HF_TOKEN }}"
+            HF_TOKEN=${{ secrets.HF_TOKEN }}
