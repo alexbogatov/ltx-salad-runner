@@ -26,9 +26,14 @@ RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/Comf
          pip3 install --no-cache-dir -r /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt; \
        fi
 
-# Download LTX 2.5 FP8 Model Weights into ComfyUI checkpoints directory
+# Declare the Hugging Face token build argument
+ARG HF_TOKEN
+
+# Download LTX 2.5 FP8 Model Weights using the auth header
 RUN mkdir -p /workspace/ComfyUI/models/checkpoints && \
-    wget -q --show-progress -O /workspace/ComfyUI/models/checkpoints/ltx-video-2.5-v2-fp8.safetensors \
+    curl -fL --retry 5 --retry-delay 5 \
+    -H "Authorization: Bearer ${HF_TOKEN}" \
+    -o /workspace/ComfyUI/models/checkpoints/ltx-video-2.5-v2-fp8.safetensors \
     "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2.5-v2-fp8.safetensors"
 
 # Set up Node dependencies and application files
