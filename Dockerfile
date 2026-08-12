@@ -26,15 +26,35 @@ RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/Comf
          pip3 install --no-cache-dir -r /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt; \
        fi
 
-# Declare the Hugging Face token build argument
-ARG HF_TOKEN
-
-# Download LTX 2.5 FP8 Model Weights using the auth header
-RUN mkdir -p /workspace/ComfyUI/models/checkpoints && \
-    curl -fL --retry 5 --retry-delay 5 \
-    -H "Authorization: Bearer ${HF_TOKEN}" \
-    -o /workspace/ComfyUI/models/checkpoints/ltx-video-2.5-v2-fp8.safetensors \
-    "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2.5-v2-fp8.safetensors"
+# Download LTX-2.5 Model Components using Docker Secret Mount
+RUN --mount=type=secret,id=HF_TOKEN \
+    HF_TOKEN=$(cat /run/secrets/HF_TOKEN) && \
+    mkdir -p /workspace/ComfyUI/models/diffusion_models \
+             /workspace/ComfyUI/models/text_encoders \
+             /workspace/ComfyUI/models/vae \
+             /workspace/ComfyUI/models/latent_upscale_models && \
+    # 1. Diffusion Model (22B Distilled INT8)
+    curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o /workspace/ComfyUI/models/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" && \
+    # 2. Text Encoders
+    curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o /workspace/ComfyUI/models/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" && \
+    curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o /workspace/ComfyUI/models/text_encoders/gemma4_e2b_it_bf16.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4_e2b_it_bf16.safetensors" && \
+    # 3. VAEs
+    curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o /workspace/ComfyUI/models/vae/ltx-2.5-video-vae-bf16.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-bf16.safetensors" && \
+    curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o /workspace/ComfyUI/models/vae/ltx-2.5-audio-vae-bf16.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors" && \
+    # 4. Latent Upscaler
+    curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o /workspace/ComfyUI/models/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
+      "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
 
 # Set up Node dependencies and application files
 COPY package*.json ./
