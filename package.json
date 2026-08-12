@@ -1,0 +1,9 @@
+{
+  "name": "ltx-salad-runner",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "test-runner.js",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1108.0"
+  }
+}
