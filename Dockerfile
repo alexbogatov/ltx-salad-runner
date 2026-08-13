@@ -30,8 +30,10 @@ RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/Comf
 COPY package*.json ./
 RUN npm install
 
+# Application & Helper Scripts
 COPY video_ltx2_5_i2v.json /workspace/video_ltx2_5_i2v.json
 COPY test-runner.js /workspace/test-runner.js
+COPY test-r2.js /workspace/test-r2.js
 COPY entrypoint.sh /workspace/entrypoint.sh
 RUN chmod +x /workspace/entrypoint.sh
 
