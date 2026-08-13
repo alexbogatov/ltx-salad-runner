@@ -1,67 +1,40 @@
-#!/bin/bash
-set -e
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
 
-echo "===================================================="
-echo "[Startup] Initializing LTX 2.5 Runner Environment"
-echo "===================================================="
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
-# Ensure target directories exist
-mkdir -p /workspace/ComfyUI/models/diffusion_models \
-         /workspace/ComfyUI/models/text_encoders \
-         /workspace/ComfyUI/models/vae \
-         /workspace/ComfyUI/models/latent_upscale_models
+# Install system dependencies, Python 3.10, and Node.js v20
+RUN apt-get update && apt-get install -y \
+    git wget curl python3-pip python3-dev ffmpeg libgl1-mesa-glx libglib2.0-0 \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Helper function to download weights dynamically
-fetch_weight() {
-    local target_path=$1
-    local url=$2
-    local label=$3
+WORKDIR /workspace
 
-    if [ ! -f "$target_path" ]; then
-        echo "[Download] Fetching $label..."
-        if [ -n "$HF_TOKEN" ]; then
-            curl -fL --retry 5 -H "Authorization: Bearer ${HF_TOKEN}" -o "$target_path" "$url"
-        else
-            curl -fL --retry 5 -o "$target_path" "$url"
-        fi
-        echo "[Download] $label completed."
-    else
-        echo "[Check] $label already exists locally."
-    fi
-}
+# Install PyTorch with CUDA support
+RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# 1. Diffusion Model
-fetch_weight "/workspace/ComfyUI/models/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
-             "Diffusion Model (22B Distilled INT8)"
+# Clone ComfyUI Core
+RUN git clone https://github.com/comfyanonymous/ComfyUI.git /workspace/ComfyUI \
+    && cd /workspace/ComfyUI \
+    && pip3 install --no-cache-dir -r requirements.txt
 
-# 2. Text Encoder A
-fetch_weight "/workspace/ComfyUI/models/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
-             "Text Encoder A (Gemma 4 12B INT8)"
+# Clone required LTX-Video custom nodes
+RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
+    && if [ -f /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt ]; then \
+         pip3 install --no-cache-dir -r /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt; \
+       fi
 
-# 3. Text Encoder B
-fetch_weight "/workspace/ComfyUI/models/text_encoders/gemma4_e2b_it_bf16.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors" \
-             "Text Encoder B (Gemma 4 12B BF16)"
+# Set up Node dependencies and application files
+COPY package*.json ./
+RUN npm install
 
-# 4. Video VAE
-fetch_weight "/workspace/ComfyUI/models/vae/ltx-2.5-video-vae-bf16.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-bf16.safetensors" \
-             "Video VAE"
+COPY video_ltx2_5_i2v.json /workspace/video_ltx2_5_i2v.json
+COPY test-runner.js /workspace/test-runner.js
+COPY entrypoint.sh /workspace/entrypoint.sh
+RUN chmod +x /workspace/entrypoint.sh
 
-# 5. Audio VAE
-fetch_weight "/workspace/ComfyUI/models/vae/ltx-2.5-audio-vae-bf16.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors" \
-             "Audio VAE"
+EXPOSE 8188
 
-# 6. Latent Spatial Upscaler
-fetch_weight "/workspace/ComfyUI/models/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors" \
-             "Latent Spatial Upscaler"
-
-echo "===================================================="
-echo "[Startup] All model weights verified. Starting test-runner..."
-echo "===================================================="
-
-exec node test-runner.js
+ENTRYPOINT ["/bin/bash", "/workspace/entrypoint.sh"]
