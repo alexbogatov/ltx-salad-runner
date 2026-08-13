@@ -13,24 +13,19 @@ const output_dir = join(process.cwd(), 'ComfyUI', 'output');
 const test_image_path = join(input_dir, 'test_input.jpg');
 const default_test_image_url = 'https://picsum.photos/1024/576.jpg';
 
-// --- R2 Credentials & Validation ---
-const {
-  r2_account_id,
-  r2_access_key_id,
-  r2_secret_access_key,
-  r2_bucket_name
-} = process.env;
+// --- R2 Credentials (UPPERCASE) ---
+const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME } = process.env;
 
-if (!r2_account_id || !r2_access_key_id || !r2_secret_access_key || !r2_bucket_name) {
+if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
   console.warn('[R2 Config Warning] One or more R2 environment variables are missing!');
 }
 
 const s3_client = new S3Client({
   region: 'auto',
-  endpoint: `https://${r2_account_id}.r2.cloudflarestorage.com`,
+  endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
   credentials: {
-    accessKeyId: r2_access_key_id || '',
-    secretAccessKey: r2_secret_access_key || '',
+    accessKeyId: R2_ACCESS_KEY_ID || '',
+    secretAccessKey: R2_SECRET_ACCESS_KEY || '',
   },
 });
 
@@ -51,17 +46,17 @@ function set_node_inputs(workflow, target_type, target_title, new_inputs) {
   }
 }
 
-// Helper: Upload a simple text log directly to R2
+// Helper: Upload text file directly to bucket root
 async function upload_text_log_to_r2(key, text_content) {
   console.log(`[R2 Log] Sending telemetry log: ${key}...`);
   try {
     await s3_client.send(new PutObjectCommand({
-      Bucket: r2_bucket_name,
+      Bucket: R2_BUCKET_NAME,
       Key: key,
       Body: text_content,
       ContentType: 'text/plain',
     }));
-    console.log(`[R2 Log SUCCESS] ${key} written to R2.`);
+    console.log(`[R2 Log SUCCESS] ${key} written to R2 bucket root.`);
   } catch (err) {
     console.error(`[R2 Log ERROR] Failed to write ${key}:`, err.message);
   }
@@ -150,14 +145,14 @@ async function execute_workflow(payload) {
   }
 }
 
-// 5. Upload Video Result to Cloudflare R2
+// 5. Upload Video Result directly to Cloudflare R2 Root
 async function upload_to_r2(file_path) {
-  console.log(`[R2] Starting streaming video upload to Cloudflare R2: ${file_path}`);
+  const destination_key = `test_run.mp4`;
+  console.log(`[R2] Starting streaming video upload to R2 root: ${destination_key}`);
   const file_stream = createReadStream(file_path);
-  const destination_key = `test-output/test_run.mp4`;
 
   await s3_client.send(new PutObjectCommand({
-    Bucket: r2_bucket_name,
+    Bucket: R2_BUCKET_NAME,
     Key: destination_key,
     Body: file_stream,
     ContentType: 'video/mp4',
@@ -172,21 +167,20 @@ async function main() {
   
   try {
     // -------------------------------------------------------------
-    // TELEMETRY LOG #1: PRE-RENDER PROOF OF LIFE
+    // FILE 1: PRE-RENDER TEXT FILE AT BUCKET ROOT
     // -------------------------------------------------------------
     const pre_render_text = [
       `[SALAD NODE TELEMETRY - PRE-RENDER]`,
       `Status: ALIVE & RUNNING`,
       `Timestamp: ${run_timestamp}`,
-      `Machine Node ID: ${process.env.salad_machine_id || 'local_test'}`,
-      `Target Bucket: ${r2_bucket_name}`,
+      `Target Bucket: ${R2_BUCKET_NAME}`,
       `Starting ComfyUI boot sequence and download...`
     ].join('\n');
 
-    await upload_text_log_to_r2('test-output/pre-render.txt', pre_render_text);
+    await upload_text_log_to_r2('pre-render.txt', pre_render_text);
 
     // Step 1: Input Setup
-    const image_url = process.env.test_image_url || default_test_image_url;
+    const image_url = process.env.TEST_IMAGE_URL || default_test_image_url;
     await download_test_image(image_url);
 
     const raw_json = readFileSync(api_json_path, 'utf-8');
@@ -214,11 +208,11 @@ async function main() {
     const output_file = join(output_dir, output_files[output_files.length - 1]);
     console.log(`[Output] Local render file identified: ${output_file}`);
 
-    // Step 4: Storage Migration (Video MP4)
+    // Step 4: Storage Migration (Video MP4 directly to root)
     await upload_to_r2(output_file);
 
     // -------------------------------------------------------------
-    // TELEMETRY LOG #2: POST-RENDER PROOF OF COMPLETION
+    // FILE 2: POST-RENDER TEXT FILE AT BUCKET ROOT
     // -------------------------------------------------------------
     const post_render_text = [
       `[SALAD NODE TELEMETRY - POST-RENDER]`,
@@ -226,10 +220,10 @@ async function main() {
       `Completed At: ${new Date().toISOString()}`,
       `Total Render Time: ${duration}s`,
       `Seed Used: ${fresh_seed}`,
-      `Video File: test-output/test_run.mp4`
+      `Video File: test_run.mp4`
     ].join('\n');
 
-    await upload_text_log_to_r2('test-output/post-render.txt', post_render_text);
+    await upload_text_log_to_r2('post-render.txt', post_render_text);
 
     console.log('[Runner] Test run completed successfully. Exiting.');
     process.exit(0);
@@ -237,8 +231,8 @@ async function main() {
   } catch (err) {
     console.error('[Fatal Error]:', err.stack || err.message);
 
-    // Attempt to log failure directly to R2 if crash occurs
-    await upload_text_log_to_r2('test-output/error-log.txt', `[CRASH ERROR]\nTimestamp: ${new Date().toISOString()}\nError: ${err.message}\nStack: ${err.stack}`);
+    // Write crash details directly to bucket root
+    await upload_text_log_to_r2('error-log.txt', `[CRASH ERROR]\nTimestamp: ${new Date().toISOString()}\nError: ${err.message}\nStack: ${err.stack}`);
 
     process.exit(1);
   }
