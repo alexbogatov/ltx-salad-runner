@@ -26,19 +26,17 @@ fetch_weight() {
 
     if [ ! -f "$target_path" ]; then
         echo "[Download] Fetching $label..."
-        
-        # Log to R2 BEFORE downloading
         node test-r2.js "step-${step_name}-start.txt" "Starting download: ${label}" || true
 
-        if ! curl -fL --retry 5 -o "$target_path" "$url"; then
+        # -C - enables auto-resume from byte offset if connection drops
+        # --retry-all-errors ensures retries on 5xx, 429, timeouts, and network drops
+        if ! curl -fL --retry 10 --retry-delay 2 --retry-all-errors -C - -o "$target_path" "$url"; then
             echo "[ERROR] Failed to download $label from $url"
-            # Log failure to R2 if download fails
             node test-r2.js "error-${step_name}-failed.txt" "Download failed for: ${label}" || true
             exit 1
         fi
         
         echo "[Download] $label completed."
-        # Log to R2 AFTER downloading
         node test-r2.js "step-${step_name}-done.txt" "Completed download: ${label}" || true
     else
         echo "[Check] $label already exists locally."
