@@ -5,6 +5,9 @@ echo "===================================================="
 echo "[Startup] Initializing LTX 2.5 Runner Environment"
 echo "===================================================="
 
+# Base CDN URL for models hosted on Cloudflare R2
+R2_CDN="https://cdn.runltx.com/models"
+
 # Ensure target directories exist
 mkdir -p /workspace/ComfyUI/models/diffusion_models \
          /workspace/ComfyUI/models/text_encoders \
@@ -27,13 +30,7 @@ fetch_weight() {
         # Log to R2 BEFORE downloading
         node test-r2.js "step-${step_name}-start.txt" "Starting download: ${label}" || true
 
-        if [ -n "$HF_TOKEN" ]; then
-            AUTH_HEADER="Authorization: Bearer ${HF_TOKEN}"
-        else
-            AUTH_HEADER="X-No-Auth: True"
-        fi
-
-        if ! curl -fL --retry 5 -H "$AUTH_HEADER" -o "$target_path" "$url"; then
+        if ! curl -fL --retry 5 -o "$target_path" "$url"; then
             echo "[ERROR] Failed to download $label from $url"
             # Log failure to R2 if download fails
             node test-r2.js "error-${step_name}-failed.txt" "Download failed for: ${label}" || true
@@ -49,39 +46,39 @@ fetch_weight() {
     fi
 }
 
-# 1. Diffusion Model
+# 1. Diffusion Model (22B Distilled INT8)
 fetch_weight "/workspace/ComfyUI/models/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
+             "${R2_CDN}/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
              "Diffusion Model (22B Distilled INT8)" \
              "1-diffusion"
 
-# 2. Text Encoder A
+# 2. Text Encoder A (Gemma 4 12B INT8)
 fetch_weight "/workspace/ComfyUI/models/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
+             "${R2_CDN}/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
              "Text Encoder A (Gemma 4 12B INT8)" \
              "2-text-encoder-a"
 
-# 3. Text Encoder B
+# 3. Text Encoder B (Gemma 4 12B BF16)
 fetch_weight "/workspace/ComfyUI/models/text_encoders/gemma4_e2b_it_bf16.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors" \
+             "${R2_CDN}/text_encoders/gemma4_e2b_it_bf16.safetensors" \
              "Text Encoder B (Gemma 4 12B BF16)" \
              "3-text-encoder-b"
 
 # 4. Video VAE
 fetch_weight "/workspace/ComfyUI/models/vae/ltx-2.5-video-vae-bf16.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-bf16.safetensors" \
+             "${R2_CDN}/vae/ltx-2.5-video-vae-bf16.safetensors" \
              "Video VAE" \
              "4-video-vae"
 
 # 5. Audio VAE
 fetch_weight "/workspace/ComfyUI/models/vae/ltx-2.5-audio-vae-bf16.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors" \
+             "${R2_CDN}/vae/ltx-2.5-audio-vae-bf16.safetensors" \
              "Audio VAE" \
              "5-audio-vae"
 
 # 6. Latent Spatial Upscaler
 fetch_weight "/workspace/ComfyUI/models/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
-             "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors" \
+             "${R2_CDN}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
              "Latent Spatial Upscaler" \
              "6-upscaler"
 
