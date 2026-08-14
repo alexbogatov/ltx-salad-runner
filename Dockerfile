@@ -3,6 +3,7 @@ FROM nvidia/cuda:12.4.1-base-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     NODE_ENV=production \
+    GIT_TERMINAL_PROMPT=0 \
     PATH="/workspace/venv/bin:$PATH"
 
 WORKDIR /app
