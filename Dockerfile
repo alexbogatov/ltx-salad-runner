@@ -12,15 +12,17 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /workspace
 
-# Install PyTorch with CUDA support
-RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Install PyTorch 2.5.1 with CUDA 12.4 support (fixes custom_op / comfy_kitchen)
+RUN pip3 install --no-cache-dir \
+    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+    --extra-index-url https://download.pytorch.org/whl/cu124
 
-# Clone ComfyUI Core
+# Clone ComfyUI Core and install dependencies
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git /workspace/ComfyUI \
     && cd /workspace/ComfyUI \
     && pip3 install --no-cache-dir -r requirements.txt
 
-# Clone required LTX-Video custom nodes
+# Clone required LTX-Video custom nodes and install dependencies
 RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
     && if [ -f /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt ]; then \
          pip3 install --no-cache-dir -r /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt; \
