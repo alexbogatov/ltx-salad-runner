@@ -1,6 +1,8 @@
 #!/bin/bash
 set -eo pipefail
 
+export GIT_TERMINAL_PROMPT=0
+
 echo "===================================================="
 echo "[Startup] Initializing LTX 2.5 Runner Environment"
 echo "===================================================="
@@ -17,56 +19,62 @@ mkdir -p "${STORAGE_DIR}/diffusion_models" \
 
 # 2. Check or Create Persistent Python Virtual Environment
 if [ ! -f "/workspace/venv/bin/activate" ]; then
-    echo "[Setup] First boot detected. Creating persistent venv on network drive..."
+    echo "[Setup] Creating persistent venv on network drive..."
     python3 -m venv /workspace/venv
-    source /workspace/venv/bin/activate
-    pip install --upgrade pip setuptools wheel
+    /workspace/venv/bin/pip install --upgrade pip setuptools wheel
     
-    echo "[Setup] Installing PyTorch with CUDA 12.4 to network drive..."
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-    pip install comfy-kitchen alembic
+    echo "[Setup] Installing PyTorch with CUDA 12.4..."
+    /workspace/venv/bin/pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+    /workspace/venv/bin/pip install comfy-kitchen alembic sqlalchemy
 else
-    echo "[Setup] Persistent venv found on network drive. Skipping package install."
-    source /workspace/venv/bin/activate
+    echo "[Setup] Persistent venv found on network drive."
 fi
+
+source /workspace/venv/bin/activate
 
 # 3. Check or Clone ComfyUI on persistent disk
 if [ ! -f "/workspace/ComfyUI/main.py" ]; then
     echo "[Setup] Cloning ComfyUI onto persistent drive..."
     git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /workspace/ComfyUI
-    pip install -r /workspace/ComfyUI/requirements.txt
-
-    echo "[Setup] Installing custom nodes..."
-    mkdir -p /workspace/ComfyUI/custom_nodes
-    git clone --depth 1 https://github.com/City96/ComfyUI-LTXVideo.git /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo
-    
-    # Patch comfy_kitchen na.py type annotations directly on disk
-    python3 -c "
-path = '/workspace/venv/lib/python3.10/site-packages/comfy_kitchen/backends/eager/na.py'
-try:
-    with open(path, 'r') as f:
-        code = f.read()
-    if 'from typing import' not in code:
-        code = 'from typing import Sequence, Optional, List\n' + code
-    else:
-        code = code.replace('from typing import', 'from typing import Sequence, Optional, List,')
-    code = code.replace('list[int]', 'Sequence[int]')
-    code = code.replace('list[bool]', 'Sequence[bool]')
-    code = code.replace('float | None', 'Optional[float]')
-    with open(path, 'w') as f:
-        f.write(code)
-    print('[Setup] Patched comfy_kitchen na.py successfully')
-except Exception as e:
-    print(f'[Setup Warning] Patch failed: {e}')
-"
-else
-    echo "[Setup] ComfyUI repository found on persistent drive."
 fi
+
+# Ensure all ComfyUI and database dependencies are installed in venv
+/workspace/venv/bin/pip install -q --no-cache-dir -r /workspace/ComfyUI/requirements.txt
+/workspace/venv/bin/pip install -q --no-cache-dir sqlalchemy alembic comfy-kitchen
+
+# Install Custom Nodes
+mkdir -p /workspace/ComfyUI/custom_nodes
+if [ ! -d "/workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo" ]; then
+    echo "[Setup] Cloning ComfyUI-LTXVideo custom node..."
+    git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git /workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo || true
+fi
+
+# Patch comfy_kitchen na.py dynamically inside venv
+/workspace/venv/bin/python3 -c "
+import importlib.util, os
+spec = importlib.util.find_spec('comfy_kitchen')
+if spec and spec.submodule_search_locations:
+    path = os.path.join(spec.submodule_search_locations[0], 'backends', 'eager', 'na.py')
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            code = f.read()
+        if 'from typing import' not in code:
+            code = 'from typing import Sequence, Optional, List\n' + code
+        else:
+            code = code.replace('from typing import', 'from typing import Sequence, Optional, List,')
+        code = code.replace('list[int]', 'Sequence[int]')
+        code = code.replace('list[bool]', 'Sequence[bool]')
+        code = code.replace('float | None', 'Optional[float]')
+        with open(path, 'w') as f:
+            f.write(code)
+        print('[Setup] Patched comfy_kitchen na.py successfully')
+" || true
 
 # 4. Link directories so ComfyUI sees models & saves to /workspace/output
 mkdir -p /workspace/ComfyUI/models
 ln -sfn /workspace/ComfyUI /app/ComfyUI
 ln -sfn /workspace/output /workspace/ComfyUI/output
+ln -sfn /workspace/output /app/ComfyUI/output
 ln -sfn "${STORAGE_DIR}/diffusion_models" /workspace/ComfyUI/models/diffusion_models
 ln -sfn "${STORAGE_DIR}/text_encoders" /workspace/ComfyUI/models/text_encoders
 ln -sfn "${STORAGE_DIR}/vae" /workspace/ComfyUI/models/vae
@@ -128,7 +136,8 @@ if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
     echo "[Idle Mode] Keeping pod alive for debugging..."
     exec sleep infinity
 else
-    python3 /workspace/ComfyUI/main.py --listen 0.0.0.0 --port 8188 &
+    # Launch ComfyUI explicitly with the persistent venv Python binary
+    /workspace/venv/bin/python3 /workspace/ComfyUI/main.py --listen 0.0.0.0 --port 8188 &
 
     echo "[Startup] Waiting for ComfyUI on port 8188..."
     until curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; do
