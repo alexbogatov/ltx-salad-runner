@@ -1,47 +1,75 @@
-FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    NODE_ENV=production
 
-# Install system dependencies, Python 3.10, and Node.js v20
-RUN apt-get update && apt-get install -y \
-    git wget curl python3-pip python3-dev ffmpeg libgl1-mesa-glx libglib2.0-0 \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Work in /app so /workspace can be mounted cleanly
 WORKDIR /app
 
-# Install PyTorch 2.5.1 with CUDA 12.4 support
-RUN pip3 install --no-cache-dir \
-    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
-    --extra-index-url https://download.pytorch.org/whl/cu124
+# 1. Install system utilities, Python 3.10, Node.js (v20 LTS), FFmpeg, and aria2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    wget \
+    aria2 \
+    ffmpeg \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    python3-dev \
+    build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Clone ComfyUI Core and install dependencies
-RUN git clone https://github.com/comfyanonymous/ComfyUI.git /app/ComfyUI \
-    && cd /app/ComfyUI \
-    && pip3 install --no-cache-dir -r requirements.txt
+# 2. Upgrade pip and install PyTorch with CUDA 12.4
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    torch \
+    torchvision \
+    torchaudio \
+    --index-url https://download.pytorch.org/whl/cu124
 
-# Clone required LTX-Video custom nodes
-RUN git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
-    && if [ -f /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt ]; then \
-         pip3 install --no-cache-dir -r /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt; \
-       fi
+# 3. Clone ComfyUI and install base dependencies
+RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/ComfyUI && \
+    pip install --no-cache-dir -r /app/ComfyUI/requirements.txt && \
+    pip install --no-cache-dir comfy-kitchen alembic
 
-# Setup Node dependencies and application files
-COPY package*.json ./
-RUN npm install
+# 4. Clone custom nodes (LTX-Video support, etc.)
+RUN git clone --depth 1 https://github.com/City96/ComfyUI-LTXVideo.git /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo
 
-COPY video_ltx2_5_i2v.json /app/video_ltx2_5_i2v.json
+# 5. Patch comfy_kitchen type hinting for torch._library.infer_schema compatibility
+RUN python3 -c "
+path = '/usr/local/lib/python3.10/dist-packages/comfy_kitchen/backends/eager/na.py'
+try:
+    with open(path, 'r') as f:
+        code = f.read()
+    if 'from typing import' not in code:
+        code = 'from typing import Sequence, Optional, List\n' + code
+    else:
+        code = code.replace('from typing import', 'from typing import Sequence, Optional, List,')
+    code = code.replace('list[int]', 'Sequence[int]')
+    code = code.replace('list[bool]', 'Sequence[bool]')
+    code = code.replace('float | None', 'Optional[float]')
+    with open(path, 'w') as f:
+        f.write(code)
+    print('[Build] Successfully applied typing patch to comfy_kitchen')
+except Exception as e:
+    print(f'[Build Warning] na.py patch skipped/failed: {e}')
+"
+
+# 6. Install Node.js Runner dependencies and copy runner scripts
+COPY package*.json /app/
+RUN if [ -f /app/package.json ]; then npm install --omit=dev; fi
+
 COPY test-runner.js /app/test-runner.js
 COPY test-r2.js /app/test-r2.js
 COPY entrypoint.sh /app/entrypoint.sh
+
 RUN chmod +x /app/entrypoint.sh
 
-# Create /workspace directory for RunPod mount point
-RUN mkdir -p /workspace
+EXPOSE 8188 8888
 
-EXPOSE 8188
-
-ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
