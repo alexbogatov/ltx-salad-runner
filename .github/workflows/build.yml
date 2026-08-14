@@ -34,21 +34,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-
       - name: Lowercase Repository Name
         id: string
         run: echo "REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Extract metadata (Tags & Labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.REPO_LC }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ github.run_number }}
+            type=sha,prefix=sha-,format=short
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ env.REPO_LC }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           secrets: |
             HF_TOKEN=${{ secrets.HF_TOKEN }}
