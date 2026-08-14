@@ -24,13 +24,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
-# Copy runner orchestration scripts
+# 1. Install Node dependencies first (for fast Docker caching)
 COPY package*.json /app/
 RUN if [ -f /app/package.json ]; then npm install --omit=dev; fi
 
-COPY test-runner.js /app/test-runner.js
-COPY test-r2.js /app/test-r2.js
-COPY entrypoint.sh /app/entrypoint.sh
+# 2. Copy ALL remaining repository files into /app
+COPY . /app/
+
+# 3. Ensure entrypoint has execution permissions
 RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8188 8888
