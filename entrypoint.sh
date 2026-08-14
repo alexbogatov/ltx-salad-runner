@@ -23,8 +23,8 @@ if [ ! -f "/workspace/venv/bin/activate" ]; then
     python3 -m venv /workspace/venv
     /workspace/venv/bin/pip install --upgrade pip setuptools wheel
     
-    echo "[Setup] Installing PyTorch with CUDA 12.4..."
-    /workspace/venv/bin/pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+    echo "[Setup] Installing PyTorch 2.5.1 with CUDA 12.4..."
+    /workspace/venv/bin/pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
 else
     echo "[Setup] Persistent venv found on network drive. Skipping base PyTorch install."
 fi
@@ -40,7 +40,8 @@ else
 fi
 
 echo "[Setup] Verifying and synchronizing Python requirements..."
-/workspace/venv/bin/pip install --no-cache-dir -r /workspace/ComfyUI/requirements.txt
+# Install ComfyUI requirements without touching PyTorch
+/workspace/venv/bin/pip install --no-cache-dir -r <(grep -vE '^(torch|torchvision|torchaudio)($|[<>=~])' /workspace/ComfyUI/requirements.txt)
 /workspace/venv/bin/pip install --no-cache-dir sqlalchemy alembic comfy-kitchen
 
 # Install Custom Nodes if missing
