@@ -19,30 +19,31 @@ mkdir -p "${STORAGE_DIR}/diffusion_models" \
 
 # 2. Check or Create Persistent Python Virtual Environment
 if [ ! -f "/workspace/venv/bin/activate" ]; then
-    echo "[Setup] Creating persistent venv on network drive..."
+    echo "[Setup] First boot: Creating persistent venv on network drive..."
     python3 -m venv /workspace/venv
     /workspace/venv/bin/pip install --upgrade pip setuptools wheel
     
     echo "[Setup] Installing PyTorch with CUDA 12.4..."
     /workspace/venv/bin/pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-    /workspace/venv/bin/pip install comfy-kitchen alembic sqlalchemy
 else
-    echo "[Setup] Persistent venv found on network drive."
+    echo "[Setup] Persistent venv found on network drive. Skipping base PyTorch install."
 fi
 
 source /workspace/venv/bin/activate
 
-# 3. Check or Clone ComfyUI on persistent disk
+# 3. Check or Clone ComfyUI & Install Dependencies ONCE
 if [ ! -f "/workspace/ComfyUI/main.py" ]; then
     echo "[Setup] Cloning ComfyUI onto persistent drive..."
     git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /workspace/ComfyUI
+    
+    echo "[Setup] Installing ComfyUI packages into persistent venv (verbose)..."
+    /workspace/venv/bin/pip install -r /workspace/ComfyUI/requirements.txt
+    /workspace/venv/bin/pip install sqlalchemy alembic comfy-kitchen
+else
+    echo "[Setup] ComfyUI already installed. Skipping pip check."
 fi
 
-# Ensure all ComfyUI and database dependencies are installed in venv
-/workspace/venv/bin/pip install -q --no-cache-dir -r /workspace/ComfyUI/requirements.txt
-/workspace/venv/bin/pip install -q --no-cache-dir sqlalchemy alembic comfy-kitchen
-
-# Install Custom Nodes
+# Install Custom Nodes if missing
 mkdir -p /workspace/ComfyUI/custom_nodes
 if [ ! -d "/workspace/ComfyUI/custom_nodes/ComfyUI-LTXVideo" ]; then
     echo "[Setup] Cloning ComfyUI-LTXVideo custom node..."
@@ -136,7 +137,6 @@ if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
     echo "[Idle Mode] Keeping pod alive for debugging..."
     exec sleep infinity
 else
-    # Launch ComfyUI explicitly with the persistent venv Python binary
     /workspace/venv/bin/python3 /workspace/ComfyUI/main.py --listen 0.0.0.0 --port 8188 &
 
     echo "[Startup] Waiting for ComfyUI on port 8188..."
