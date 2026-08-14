@@ -4,11 +4,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     NODE_ENV=production \
     GIT_TERMINAL_PROMPT=0 \
-    PATH="/workspace/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# Install minimal OS utilities + Python base + Node.js
+# 1. Install system utilities, Python 3, and Node.js 20
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
@@ -24,14 +24,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
-# 1. Install Node dependencies first (for fast Docker caching)
+# 2. Build local Python virtual environment & bake PyTorch cu130 + CUDA backends
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && /opt/venv/bin/pip install --no-cache-dir \
+       torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 \
+    && /opt/venv/bin/pip install --no-cache-dir \
+       comfy-kitchen alembic sqlalchemy
+
+# 3. Clone ComfyUI and LTX custom nodes directly into container image
+RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/ComfyUI \
+    && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/requirements.txt \
+    && mkdir -p /app/ComfyUI/custom_nodes \
+    && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
+    && rm -rf /root/.cache /tmp/*
+
+# 4. Patch comfy_kitchen na.py directly inside the baked venv
+RUN /opt/venv/bin/python3 -c "\
+import importlib.util, os;\
+spec = importlib.util.find_spec('comfy_kitchen');\
+path = os.path.join(spec.submodule_search_locations[0], 'backends', 'eager', 'na.py');\
+code = open(path).read();\
+code = code.replace('from typing import', 'from typing import Sequence, Optional, List,') if 'from typing import' in code else 'from typing import Sequence, Optional, List\n' + code;\
+code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]');\
+open(path, 'w').write(code);\
+print('[Build] comfy_kitchen na.py patched successfully')"
+
+# 5. Copy package configs and install Node orchestration dependencies
 COPY package*.json /app/
 RUN if [ -f /app/package.json ]; then npm install --omit=dev; fi
 
-# 2. Copy ALL remaining repository files into /app
+# 6. Copy all runner orchestration files
 COPY . /app/
-
-# 3. Ensure entrypoint has execution permissions
 RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8188 8888
