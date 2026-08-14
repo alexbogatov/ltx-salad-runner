@@ -31,17 +31,17 @@ fi
 
 source /workspace/venv/bin/activate
 
-# 3. Check or Clone ComfyUI & Install Dependencies ONCE
+# 3. Check or Clone ComfyUI & Ensure Dependencies are Synchronized
 if [ ! -f "/workspace/ComfyUI/main.py" ]; then
     echo "[Setup] Cloning ComfyUI onto persistent drive..."
     git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /workspace/ComfyUI
-    
-    echo "[Setup] Installing ComfyUI packages into persistent venv (verbose)..."
-    /workspace/venv/bin/pip install -r /workspace/ComfyUI/requirements.txt
-    /workspace/venv/bin/pip install sqlalchemy alembic comfy-kitchen
 else
-    echo "[Setup] ComfyUI already installed. Skipping pip check."
+    echo "[Setup] ComfyUI already present."
 fi
+
+echo "[Setup] Verifying and synchronizing Python requirements..."
+/workspace/venv/bin/pip install --no-cache-dir -r /workspace/ComfyUI/requirements.txt
+/workspace/venv/bin/pip install --no-cache-dir sqlalchemy alembic comfy-kitchen
 
 # Install Custom Nodes if missing
 mkdir -p /workspace/ComfyUI/custom_nodes
