@@ -60,14 +60,13 @@ code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequenc
 open(path, 'w').write(code);\
 print('[Build] comfy_kitchen na.py patched successfully')"
 
-# 5. Warm up Triton cache by running a tiny inference (optional but helps)
+# 5. Warm up Triton cache by running a tiny inference
 RUN /opt/venv/bin/python3 -c "\
 import torch;\
 print(f'PyTorch: {torch.__version__}');\
 print(f'CUDA Available: {torch.cuda.is_available()}');\
 if torch.cuda.is_available():\
     print(f'GPU: {torch.cuda.get_device_name(0)}');\
-    # Trigger Triton compilation by doing a small operation\n\
     a = torch.randn(1024, 1024, device='cuda');\
     b = torch.randn(1024, 1024, device='cuda');\
     c = torch.matmul(a, b);\
