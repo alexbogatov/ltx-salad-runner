@@ -7,7 +7,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/venv/bin:$PATH" \
     TRITON_KNOBS_BUILD_IMPL=torch \
     CC=/usr/bin/gcc \
-    CXX=/usr/bin/g++
+    CXX=/usr/bin/g++ \
+    TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0" \
+    MAX_JOBS=4
 
 WORKDIR /app
 
@@ -22,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
+    python3-dev \
     build-essential \
     gcc \
     g++ \
@@ -57,11 +60,25 @@ code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequenc
 open(path, 'w').write(code);\
 print('[Build] comfy_kitchen na.py patched successfully')"
 
-# 5. Copy package configs and install Node orchestration dependencies
+# 5. Warm up Triton cache by running a tiny inference (optional but helps)
+RUN /opt/venv/bin/python3 -c "\
+import torch;\
+print(f'PyTorch: {torch.__version__}');\
+print(f'CUDA Available: {torch.cuda.is_available()}');\
+if torch.cuda.is_available():\
+    print(f'GPU: {torch.cuda.get_device_name(0)}');\
+    # Trigger Triton compilation by doing a small operation\n\
+    a = torch.randn(1024, 1024, device='cuda');\
+    b = torch.randn(1024, 1024, device='cuda');\
+    c = torch.matmul(a, b);\
+    print('Triton warmup complete');\
+"
+
+# 6. Copy package configs and install Node orchestration dependencies
 COPY package*.json /app/
 RUN if [ -f /app/package.json ]; then npm install --omit=dev; fi
 
-# 6. Copy all runner orchestration files
+# 7. Copy all runner orchestration files
 COPY . /app/
 RUN chmod +x /app/entrypoint.sh
 
