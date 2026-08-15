@@ -10,10 +10,16 @@ const comfy_host = `http://127.0.0.1:${comfy_port}`;
 const api_json_path = join(process.cwd(), 'video_ltx2_5_i2v.json');
 const input_dir = join(process.cwd(), 'ComfyUI', 'input');
 const output_dir = join(process.cwd(), 'ComfyUI', 'output');
-const test_image_path = join(input_dir, 'test_input.jpg');
 const default_test_image_url = 'https://picsum.photos/1024/576.jpg';
 const NUM_VIDEOS = 3; // Generate 3 videos
-const VIDEO_DURATION_SECONDS = 3; // 3 seconds each
+const VIDEO_DURATION_SECONDS = 1;
+
+// --- Test Images for Video Generation ---
+const TEST_IMAGES = [
+  'https://images.listing.ca/test-images/002.jpg',
+  'https://images.listing.ca/test-images/004.jpg',
+  'https://images.listing.ca/test-images/010.jpg'
+];
 
 // --- R2 Credentials (UPPERCASE) ---
 const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME } = process.env;
@@ -98,14 +104,16 @@ async function upload_text_log_to_r2(key, text_content) {
 }
 
 // 1. Download Test Image
-async function download_test_image(url) {
+async function download_test_image(url, filename) {
   console.log(`[Setup] Downloading test image from ${url}...`);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch image: ${res.statusText}`);
   const buffer = await res.arrayBuffer();
   await mkdir(input_dir, { recursive: true });
-  await writeFile(test_image_path, Buffer.from(buffer));
-  console.log(`[Setup] Image saved to ${test_image_path}`);
+  const image_path = join(input_dir, filename);
+  await writeFile(image_path, Buffer.from(buffer));
+  console.log(`[Setup] Image saved to ${image_path}`);
+  return image_path;
 }
 
 // 3. Poll Server Status
@@ -183,7 +191,6 @@ async function upload_to_r2(file_path, video_number) {
 
 // Helper: Modify workflow for duration
 function update_workflow_duration(workflow, duration_seconds, fps) {
-  // Find the PrimitiveInt node for duration (ID 398:362)
   for (const [node_id, node] of Object.entries(workflow)) {
     if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
       node.inputs.value = duration_seconds;
@@ -191,6 +198,12 @@ function update_workflow_duration(workflow, duration_seconds, fps) {
     }
     if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Frame Rate') {
       node.inputs.value = fps || 25;
+    }
+    // Force the math expression to recalculate by updating its inputs
+    if (node.class_type === 'ComfyMathExpression' && node._meta?.title === 'Math Expression (length)') {
+      if (node.inputs.values && node.inputs.values.a) {
+        console.log(`[Config] Math Expression will use updated duration: ${duration_seconds} × ${fps} + 1 = ${duration_seconds * fps + 1} frames`);
+      }
     }
   }
   return workflow;
@@ -211,27 +224,33 @@ async function main() {
       `Timestamp: ${run_timestamp}`,
       `Target Bucket: ${R2_BUCKET_NAME}`,
       `Generating ${NUM_VIDEOS} videos of ${VIDEO_DURATION_SECONDS} seconds each`,
+      `Using ${NUM_VIDEOS} different test images`,
       `Starting ComfyUI boot sequence and download...`
     ].join('\n');
 
     await upload_text_log_to_r2('pre-render.txt', pre_render_text);
 
-    // Step 1: Input Setup
-    const image_url = process.env.TEST_IMAGE_URL || default_test_image_url;
-    await download_test_image(image_url);
+    // Step 1: Download all test images
+    const image_files = [];
+    for (let i = 0; i < NUM_VIDEOS; i++) {
+      const image_url = TEST_IMAGES[i % TEST_IMAGES.length];
+      const filename = `test_input_${i+1}.jpg`;
+      await download_test_image(image_url, filename);
+      image_files.push(filename);
+    }
 
     // Read the base workflow
     const raw_json = readFileSync(api_json_path, 'utf-8');
     const base_workflow = JSON.parse(raw_json);
 
     // Modify for shorter duration
-    const workflow = update_workflow_duration(base_workflow, VIDEO_DURATION_SECONDS, 25);
+    const workflow = update_workflow_duration(base_workflow, VIDEO_DURATION_SECONDS, 24);
 
     // Step 2: Ensure ComfyUI is running
     console.log('[ComfyUI] Waiting for existing instance...');
     await wait_for_comfy_ready();
 
-    // Step 3: Generate multiple videos
+    // Step 3: Generate multiple videos with different images
     const video_results = [];
     
     for (let i = 1; i <= NUM_VIDEOS; i++) {
@@ -246,11 +265,13 @@ async function main() {
       const fresh_seed = Math.floor(Math.random() * 1000000000000000);
       console.log(`[Setup] Video ${i} assigned noise_seed: ${fresh_seed}`);
       
-      // Update the workflow with the new seed
-      set_node_inputs(workflow_copy, 'RandomNoise', null, { noise_seed: fresh_seed });
+      // Use a different image for each video
+      const image_filename = image_files[i-1];
+      console.log(`[Setup] Video ${i} using image: ${image_filename}`);
       
-      // Update the image input
-      set_node_inputs(workflow_copy, 'LoadImage', null, { image: 'test_input.jpg' });
+      // Update the workflow with the new seed and image
+      set_node_inputs(workflow_copy, 'RandomNoise', null, { noise_seed: fresh_seed });
+      set_node_inputs(workflow_copy, 'LoadImage', null, { image: image_filename });
       
       // Execute the workflow
       const duration = await execute_workflow(workflow_copy, i);
@@ -264,12 +285,22 @@ async function main() {
       
       console.log(`[Output ${i}] Local render file identified: ${output_file}`);
       
-      // Upload to R2
-      const r2_key = await upload_to_r2(output_file, i);
+      // Upload to R2 with unique name including image reference
+      const r2_key = `test_run_${i}_img${i}.mp4`;
+      console.log(`[R2] Uploading as: ${r2_key}`);
+      const file_stream = createReadStream(output_file);
+      await s3_client.send(new PutObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: r2_key,
+        Body: file_stream,
+        ContentType: 'video/mp4',
+      }));
+      console.log(`[R2 Video SUCCESS] Asset stored at: ${r2_key}`);
       uploaded_files.push(r2_key);
       
       video_results.push({
         number: i,
+        image: image_filename,
         seed: fresh_seed,
         duration: duration,
         file: output_file,
@@ -277,10 +308,6 @@ async function main() {
       });
       
       console.log(`✅ Video ${i}/${NUM_VIDEOS} completed!\n`);
-      
-      // Clean up the output file after upload (optional)
-      // Uncomment if you want to keep the output directory clean
-      // unlinkSync(output_file);
     }
 
     // -------------------------------------------------------------
@@ -292,11 +319,13 @@ async function main() {
       `Completed At: ${new Date().toISOString()}`,
       `Total Videos Generated: ${NUM_VIDEOS}`,
       `Video Duration: ${VIDEO_DURATION_SECONDS}s each`,
+      `Images Used:`,
+      ...image_files.map((f, i) => `  ${i+1}. ${f}`),
       `Uploaded Files:`,
       ...uploaded_files.map((f, i) => `  ${i+1}. ${f}`),
       `Results:`,
       ...video_results.map(r => 
-        `  Video ${r.number}: seed=${r.seed}, render_time=${r.duration}s, r2_key=${r.r2_key}`
+        `  Video ${r.number}: image=${r.image}, seed=${r.seed}, render_time=${r.duration}s, r2_key=${r.r2_key}`
       )
     ].join('\n');
 
