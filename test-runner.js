@@ -193,8 +193,8 @@ async function main() {
     set_node_inputs(workflow, 'RandomNoise', null, { noise_seed: fresh_seed });
 
     // Step 2: Execution
-    launch_comfy_ui();
-    await wait_for_comfy_ready();
+    // launch_comfy_ui();
+    // await wait_for_comfy_ready();
     const duration = await execute_workflow(workflow);
 
     // Step 3: Output Handling
