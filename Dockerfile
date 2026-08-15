@@ -60,18 +60,9 @@ code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequenc
 open(path, 'w').write(code);\
 print('[Build] comfy_kitchen na.py patched successfully')"
 
-# 5. Warm up Triton cache by running a tiny inference
-RUN /opt/venv/bin/python3 -c "\
-import torch;\
-print(f'PyTorch: {torch.__version__}');\
-print(f'CUDA Available: {torch.cuda.is_available()}');\
-if torch.cuda.is_available():\
-    print(f'GPU: {torch.cuda.get_device_name(0)}');\
-    a = torch.randn(1024, 1024, device='cuda');\
-    b = torch.randn(1024, 1024, device='cuda');\
-    c = torch.matmul(a, b);\
-    print('Triton warmup complete');\
-"
+# 5. Copy warmup script and run it (will skip GPU if not available)
+COPY warmup.py /app/
+RUN /opt/venv/bin/python3 /app/warmup.py || echo "Warmup skipped (no GPU available during build)"
 
 # 6. Copy package configs and install Node orchestration dependencies
 COPY package*.json /app/
