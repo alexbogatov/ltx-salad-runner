@@ -9,12 +9,16 @@ echo "===================================================="
 
 STORAGE_DIR="/workspace/models"
 
-# # 1. Ensure network storage directories exist
-# mkdir -p "${STORAGE_DIR}/diffusion_models" \
-#          "${STORAGE_DIR}/text_encoders" \
-#          "${STORAGE_DIR}/vae" \
-#          "${STORAGE_DIR}/latent_upscale_models" \
-#          "/workspace/output"
+# Clean up stale processes and locks
+pkill -f "main.py" || true
+rm -f /app/ComfyUI/user/comfyui.db.lock || true
+
+# 1. Ensure network storage directories exist
+mkdir -p "${STORAGE_DIR}/diffusion_models" \
+         "${STORAGE_DIR}/text_encoders" \
+         "${STORAGE_DIR}/vae" \
+         "${STORAGE_DIR}/latent_upscale_models" \
+         "/workspace/output"
 
 # 2. Symlink persistent storage into baked ComfyUI instance
 mkdir -p /app/ComfyUI/models
@@ -84,6 +88,7 @@ if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
     echo "[Idle Mode] Keeping pod alive for debugging..."
     exec sleep infinity
 else
+    cd /app
     /opt/venv/bin/python3 /app/ComfyUI/main.py --listen 0.0.0.0 --port 8188 &
 
     echo "[Startup] Waiting for ComfyUI on port 8188..."
