@@ -12,7 +12,7 @@ const input_dir = join(process.cwd(), 'ComfyUI', 'input');
 const output_dir = join(process.cwd(), 'ComfyUI', 'output');
 const default_test_image_url = 'https://picsum.photos/1024/576.jpg';
 const NUM_VIDEOS = 3; // Generate 3 videos
-const VIDEO_DURATION_SECONDS = 1;
+const VIDEO_DURATION_SECONDS = 2;
 
 // --- Test Images for Video Generation ---
 const TEST_IMAGES = [
