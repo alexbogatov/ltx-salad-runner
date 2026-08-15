@@ -4,11 +4,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     NODE_ENV=production \
     GIT_TERMINAL_PROMPT=0 \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    TRITON_KNOBS_BUILD_IMPL=torch \
+    CC=/usr/bin/gcc \
+    CXX=/usr/bin/g++
 
 WORKDIR /app
 
-# 1. Install system utilities, Python 3, and Node.js 20
+# 1. Install system utilities, Python 3, Node.js 20, and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
@@ -19,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
+    build-essential \
+    gcc \
+    g++ \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
@@ -37,6 +43,7 @@ RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/Comfy
     && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/requirements.txt \
     && mkdir -p /app/ComfyUI/custom_nodes \
     && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
+    && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt \
     && rm -rf /root/.cache /tmp/*
 
 # 4. Patch comfy_kitchen na.py directly inside the baked venv
