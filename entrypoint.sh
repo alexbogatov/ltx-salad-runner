@@ -89,7 +89,7 @@ if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
     exec sleep infinity
 else
     cd /app
-    /opt/venv/bin/python3 /app/ComfyUI/main.py --listen 0.0.0.0 --port 8188 &
+    /opt/venv/bin/python3 /app/ComfyUI/main.py --listen 0.0.0.0 --port 8188 --highvram &
 
     echo "[Startup] Waiting for ComfyUI on port 8188..."
     until curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; do
