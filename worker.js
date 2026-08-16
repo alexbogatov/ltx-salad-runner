@@ -21,7 +21,7 @@ let HYPERSTACK_VM_ID = null;
 // API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
 const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS) || 5;
-const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT) || 3;
+const MAX_RETRY_COUNT = 2;
 
 // Hyperstack Configuration
 const HYPERSTACK_API_URL = process.env.HYPERSTACK_API_URL || 'https://infrahub-api.nexgencloud.com/v1';
@@ -145,10 +145,14 @@ const hibernate_vm = async () => {
         if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
 
         console.log(`[Hibernate] Requesting hibernation for VM ${vm_id}...`);
-        const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
+        
+        const url = `${HYPERSTACK_API_URL}/core/virtual-machines/hibernate`;
         const res = await fetch(url, {
             method: 'POST',
-            headers: get_hyperstack_headers()
+            headers: get_hyperstack_headers(),
+            body: JSON.stringify({
+                virtual_machine_ids: [vm_id]
+            })
         });
 
         if (!res.ok) {
