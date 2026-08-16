@@ -28,9 +28,9 @@ ln -sfn "${STORAGE_DIR}/text_encoders" /app/ComfyUI/models/text_encoders
 ln -sfn "${STORAGE_DIR}/vae" /app/ComfyUI/models/vae
 ln -sfn "${STORAGE_DIR}/latent_upscale_models" /app/ComfyUI/models/latent_upscale_models
 
-# ==============================================================================
-# 3. Model Fetcher (Commented out - Models are pre-cached on persistent disk)
-# ==============================================================================
+echo "==============================================================================
+echo "3. Model Fetcher (Commented out - Models are pre-cached on persistent disk)
+echo "==============================================================================
 
 R2_CDN="https://cdn.runltx.com/models"
 fetch_weight() {
@@ -41,7 +41,6 @@ fetch_weight() {
 
     if [ ! -s "$target_path" ]; then
         echo "[Download] Fetching $label..."
-        node /app/test-r2.js "step-${step_name}-start.txt" "Starting download: ${label}" || true
         rm -f "$target_path" "${target_path}.tmp"
 
         if command -v aria2c &> /dev/null; then
@@ -52,7 +51,6 @@ fetch_weight() {
 
         mv "${target_path}.tmp" "$target_path"
         echo "[Download] $label completed."
-        node /app/test-r2.js "step-${step_name}-done.txt" "Completed download: ${label}" || true
     else
         echo "[Check] $label already cached on persistent disk."
     fi
@@ -82,7 +80,7 @@ fetch_weight "${STORAGE_DIR}/latent_upscale_models/ltx-2.5-latent-spatial-upscal
              "${R2_CDN}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
              "Latent Spatial Upscaler" "6-upscaler"
              
-# ==============================================================================
+echo "==============================================================================
 
 # 3. Start ComfyUI & Worker
 cd /app
