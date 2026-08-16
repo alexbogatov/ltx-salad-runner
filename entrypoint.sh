@@ -28,9 +28,10 @@ ln -sfn "${STORAGE_DIR}/text_encoders" /app/ComfyUI/models/text_encoders
 ln -sfn "${STORAGE_DIR}/vae" /app/ComfyUI/models/vae
 ln -sfn "${STORAGE_DIR}/latent_upscale_models" /app/ComfyUI/models/latent_upscale_models
 
-==============================================================================
-3. Model Fetcher (Commented out - Models are pre-cached on persistent disk)
-==============================================================================
+# ==============================================================================
+# 3. Model Fetcher (Commented out - Models are pre-cached on persistent disk)
+# ==============================================================================
+
 R2_CDN="https://cdn.runltx.com/models"
 fetch_weight() {
     local target_path=$1
@@ -80,7 +81,8 @@ fetch_weight "${STORAGE_DIR}/vae/ltx-2.5-audio-vae-bf16.safetensors" \
 fetch_weight "${STORAGE_DIR}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
              "${R2_CDN}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
              "Latent Spatial Upscaler" "6-upscaler"
-==============================================================================
+             
+# ==============================================================================
 
 # 3. Start ComfyUI & Worker
 cd /app
