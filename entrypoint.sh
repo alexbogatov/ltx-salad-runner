@@ -100,3 +100,4 @@ else
     # Launch worker.js (replaces test-runner.js)
     exec node worker.js
 fi
+
