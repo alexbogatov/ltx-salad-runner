@@ -147,7 +147,7 @@ const hibernate_vm = async () => {
         console.log(`[Hibernate] Requesting hibernation for VM ${vm_id}...`);
         
         // GET /core/virtual-machines/{vm_id}/hibernate
-        const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate`;
+        const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
         const res = await fetch(url, {
             method: 'GET',
             headers: get_hyperstack_headers()
