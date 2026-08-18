@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.0-base-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -13,12 +13,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-# 1. System utilities, Python 3, Node.js 20, and build tools
+# 1. Install system utilities, Python 3, Node.js 20, and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     wget \
     aria2 \
+    ffmpeg \
     ca-certificates \
     python3 \
     python3-pip \
@@ -32,20 +33,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
-# 2. Python virtual environment & PyTorch cu124 + comfy-kitchen stack
+# 2. Build local Python virtual environment & bake PyTorch cu130 + CUDA backends
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
     && /opt/venv/bin/pip install --no-cache-dir \
-       torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 \
+       torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 \
     && /opt/venv/bin/pip install --no-cache-dir \
        comfy-kitchen alembic sqlalchemy
 
-# 3. Clone ComfyUI Core and install requirements
+# 3. Clone ComfyUI and LTX custom nodes directly into container image
 RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/ComfyUI \
     && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/requirements.txt \
+    && mkdir -p /app/ComfyUI/custom_nodes \
+    && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
+    && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt \
     && rm -rf /root/.cache /tmp/*
 
-# 4. Patch comfy_kitchen na.py directly inside the venv
+# 4. Patch comfy_kitchen na.py directly inside the baked venv
 RUN /opt/venv/bin/python3 -c "\
 import importlib.util, os;\
 spec = importlib.util.find_spec('comfy_kitchen');\
@@ -56,21 +60,18 @@ code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequenc
 open(path, 'w').write(code);\
 print('[Build] comfy_kitchen na.py patched successfully')"
 
-# 5. Create base fallback directories
-RUN mkdir -p /app/ComfyUI/models/diffusion_models \
-             /app/ComfyUI/models/clip \
-             /app/ComfyUI/models/vae \
-             /app/ComfyUI/input \
-             /app/ComfyUI/output
+# 5. Copy warmup script and run it (will skip GPU if not available)
+COPY warmup.py /app/
+RUN /opt/venv/bin/python3 /app/warmup.py || echo "Warmup skipped (no GPU available during build)"
 
-# 6. Install Node dependencies
+# 6. Copy package configs and install Node orchestration dependencies
 COPY package*.json /app/
 RUN if [ -f /app/package.json ]; then npm install --omit=dev; fi
 
-# 7. Copy project files and workflow
+# 7. Copy all runner orchestration files
 COPY . /app/
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 8188
+EXPOSE 8188 8888
 
 ENTRYPOINT ["/app/entrypoint.sh"]
