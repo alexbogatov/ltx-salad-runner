@@ -11,6 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
+    COMFY_KITCHEN_BACKEND=triton,cuda \
+    COMFY_KITCHEN_ALLOW_TRITON=1 \
     MAX_JOBS=4
 
 WORKDIR /app
@@ -36,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
-# 2. Build local Python virtual environment & bake PyTorch cu124 + CUDA backends
+# 2. Build local Python virtual environment & bake PyTorch cu124 + backends
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
     && /opt/venv/bin/pip install --no-cache-dir \
@@ -64,11 +66,11 @@ code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequenc
 open(path, 'w').write(code);\
 print('[Build] comfy_kitchen na.py patched successfully')"
 
-# 5. Copy warmup script and run it (will skip GPU if not available during build)
+# 5. Copy warmup script
 COPY warmup.py /app/
 RUN /opt/venv/bin/python3 /app/warmup.py || echo "Warmup skipped (no GPU available during build)"
 
-# 6. Copy package configs and install Node orchestration dependencies
+# 6. Copy package configs and install Node dependencies
 COPY package*.json /app/
 RUN if [ -f /app/package.json ]; then \
       npm install --omit=dev && npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner dotenv ws; \
