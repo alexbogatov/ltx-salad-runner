@@ -56,7 +56,7 @@ RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/Comfy
     && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124 \
     && rm -rf /root/.cache /tmp/*
 
-# 4. Patch comfy_kitchen (na.py typing and bypass broken Triton rms_rope kernel)
+# 4. Patch comfy_kitchen (Fix typing in na.py & neutralize broken triton init syntax error)
 RUN /opt/venv/bin/python3 - <<'EOF'
 import importlib.util
 import os
@@ -64,31 +64,29 @@ import os
 spec = importlib.util.find_spec('comfy_kitchen')
 pkg_dir = spec.submodule_search_locations[0]
 
-# Patch na.py typing
+# A. Patch na.py typing
 path_na = os.path.join(pkg_dir, 'backends', 'eager', 'na.py')
-with open(path_na, 'r') as f:
-    code_na = f.read()
+if os.path.exists(path_na):
+    with open(path_na, 'r') as f:
+        code_na = f.read()
 
-if 'from typing import' in code_na:
-    code_na = code_na.replace('from typing import', 'from typing import Sequence, Optional, List,')
-else:
-    code_na = 'from typing import Sequence, Optional, List\n' + code_na
+    if 'from typing import' in code_na:
+        code_na = code_na.replace('from typing import', 'from typing import Sequence, Optional, List,')
+    else:
+        code_na = 'from typing import Sequence, Optional, List\n' + code_na
 
-code_na = code_na.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]')
+    code_na = code_na.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]')
 
-with open(path_na, 'w') as f:
-    f.write(code_na)
+    with open(path_na, 'w') as f:
+        f.write(code_na)
 
-# Patch triton init to remove broken rms_rope registration so it uses eager/cuda
+# B. Neutralize the syntax error in triton backend init by clearing/emptying it safely
 init_triton = os.path.join(pkg_dir, 'backends', 'triton', '__init__.py')
 if os.path.exists(init_triton):
-    with open(init_triton, 'r') as f:
-        code_init = f.read()
-    code_init = code_init.replace('rms_rope', '# rms_rope')
     with open(init_triton, 'w') as f:
-        f.write(code_init)
+        f.write("# Triton backend initialization neutralized to prevent syntax parsing errors\n")
 
-print('[Build] comfy_kitchen patched successfully for all kernels')
+print('[Build] comfy_kitchen patched successfully')
 EOF
 
 # 5. Copy warmup script
