@@ -5,21 +5,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NODE_ENV=production \
     GIT_TERMINAL_PROMPT=0 \
     PATH="/opt/venv/bin:$PATH" \
-    CUDA_HOME=/usr/local/cuda \
-    TORCH_CUDA_ARCH_LIST="8.0;8.9;9.0" \
+    TRITON_KNOBS_BUILD_IMPL=torch \
+    CC=/usr/bin/gcc \
+    CXX=/usr/bin/g++ \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all \
     MAX_JOBS=4
 
 WORKDIR /app
 
-# 1. Install system utilities, Python 3, Node.js 20, GL libraries, and build tools
+# 1. Install system utilities, Python 3, Node.js 20, and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     wget \
     aria2 \
+    ffmpeg \
     ca-certificates \
-    libx11-6 \
-    libgl1 \
     python3 \
     python3-pip \
     python3-venv \
@@ -33,21 +36,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/*
 
-# 2. Python venv & PyTorch cu124 + SageAttention + Triton
+# 2. Build local Python virtual environment & bake PyTorch cu124 + CUDA backends
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
     && /opt/venv/bin/pip install --no-cache-dir \
-       torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 \
+        torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 \
     && /opt/venv/bin/pip install --no-cache-dir \
-       comfy-kitchen alembic sqlalchemy triton \
+        comfy-kitchen alembic sqlalchemy triton \
     && /opt/venv/bin/pip install --no-cache-dir sageattention --no-build-isolation || true
 
-# 3. Clone ComfyUI Core and install requirements
+# 3. Clone ComfyUI and LTX custom nodes without overriding PyTorch cu124
 RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/ComfyUI \
-    && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/requirements.txt \
+    && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124 \
+    && mkdir -p /app/ComfyUI/custom_nodes \
+    && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo \
+    && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124 \
     && rm -rf /root/.cache /tmp/*
 
-# 4. Patch comfy_kitchen na.py directly inside the venv
+# 4. Patch comfy_kitchen na.py directly inside the baked venv
 RUN /opt/venv/bin/python3 -c "\
 import importlib.util, os;\
 spec = importlib.util.find_spec('comfy_kitchen');\
@@ -58,14 +64,11 @@ code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequenc
 open(path, 'w').write(code);\
 print('[Build] comfy_kitchen na.py patched successfully')"
 
-# 5. Create base directories
-RUN mkdir -p /app/ComfyUI/models/diffusion_models \
-             /app/ComfyUI/models/clip \
-             /app/ComfyUI/models/vae \
-             /app/ComfyUI/input \
-             /app/ComfyUI/output
+# 5. Copy warmup script and run it (will skip GPU if not available during build)
+COPY warmup.py /app/
+RUN /opt/venv/bin/python3 /app/warmup.py || echo "Warmup skipped (no GPU available during build)"
 
-# 6. Install Node dependencies
+# 6. Copy package configs and install Node orchestration dependencies
 COPY package*.json /app/
 RUN if [ -f /app/package.json ]; then \
       npm install --omit=dev && npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner dotenv ws; \
@@ -73,10 +76,10 @@ RUN if [ -f /app/package.json ]; then \
       npm init -y && npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner dotenv ws; \
     fi
 
-# 7. Copy project files and workflow
+# 7. Copy all runner orchestration files
 COPY . /app/
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 8188
+EXPOSE 8188 8888
 
 ENTRYPOINT ["/app/entrypoint.sh"]
