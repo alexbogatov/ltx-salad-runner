@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NVIDIA_DRIVER_CAPABILITIES=all \
     COMFY_KITCHEN_BACKEND=triton,cuda \
     COMFY_KITCHEN_ALLOW_TRITON=1 \
+    CUDA_MODULE_LOADING=LAZY \
     MAX_JOBS=4
 
 WORKDIR /app
@@ -55,16 +56,28 @@ RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/Comfy
     && /opt/venv/bin/pip install --no-cache-dir -r /app/ComfyUI/custom_nodes/ComfyUI-LTXVideo/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124 \
     && rm -rf /root/.cache /tmp/*
 
-# 4. Patch comfy_kitchen na.py directly inside the baked venv
+# 4. Patch comfy_kitchen (na.py typing and bypass broken Triton rms_rope kernel)
 RUN /opt/venv/bin/python3 -c "\
 import importlib.util, os;\
 spec = importlib.util.find_spec('comfy_kitchen');\
-path = os.path.join(spec.submodule_search_locations[0], 'backends', 'eager', 'na.py');\
-code = open(path).read();\
-code = code.replace('from typing import', 'from typing import Sequence, Optional, List,') if 'from typing import' in code else 'from typing import Sequence, Optional, List\n' + code;\
-code = code.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]');\
-open(path, 'w').write(code);\
-print('[Build] comfy_kitchen na.py patched successfully')"
+pkg_dir = spec.submodule_search_locations[0];\
+\
+# Patch na.py typing\
+path_na = os.path.join(pkg_dir, 'backends', 'eager', 'na.py');\
+code_na = open(path_na).read();\
+code_na = code_na.replace('from typing import', 'from typing import Sequence, Optional, List,') if 'from typing import' in code_na else 'from typing import Sequence, Optional, List\n' + code_na;\
+code_na = code_na.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]');\
+open(path_na, 'w').write(code_na);\
+\
+# Patch triton init to remove broken rms_rope registration so it uses eager/cuda\
+init_triton = os.path.join(pkg_dir, 'backends', 'triton', '__init__.py');\
+if os.path.exists(init_triton):\
+    code_init = open(init_triton).read();\
+    code_init = code_init.replace('rms_rope', '# rms_rope');\
+    open(init_triton, 'w').write(code_init);\
+\
+print('[Build] comfy_kitchen patched successfully for all kernels');\
+"
 
 # 5. Copy warmup script
 COPY warmup.py /app/
