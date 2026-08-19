@@ -37,13 +37,14 @@ if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
     echo "[Idle Mode] Keeping pod alive for debugging..."
     exec sleep infinity
 else
-    # Launch ComfyUI with maximum A100 acceleration and zero offload overhead
+
+    # Launch ComfyUI with strict GPU residency and enabled Triton backend
     /opt/venv/bin/python3 /app/ComfyUI/main.py \
         --listen 0.0.0.0 \
         --port 8188 \
         --gpu-only \
-        --highvram \
         --fast \
+        --enable-triton-backend \
         --use-sage-attention \
         --disable-auto-launch &
 
