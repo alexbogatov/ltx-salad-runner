@@ -57,27 +57,39 @@ RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /app/Comfy
     && rm -rf /root/.cache /tmp/*
 
 # 4. Patch comfy_kitchen (na.py typing and bypass broken Triton rms_rope kernel)
-RUN /opt/venv/bin/python3 -c "\
-import importlib.util, os;\
-spec = importlib.util.find_spec('comfy_kitchen');\
-pkg_dir = spec.submodule_search_locations[0];\
-\
-# Patch na.py typing\
-path_na = os.path.join(pkg_dir, 'backends', 'eager', 'na.py');\
-code_na = open(path_na).read();\
-code_na = code_na.replace('from typing import', 'from typing import Sequence, Optional, List,') if 'from typing import' in code_na else 'from typing import Sequence, Optional, List\n' + code_na;\
-code_na = code_na.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]');\
-open(path_na, 'w').write(code_na);\
-\
-# Patch triton init to remove broken rms_rope registration so it uses eager/cuda\
-init_triton = os.path.join(pkg_dir, 'backends', 'triton', '__init__.py');\
-if os.path.exists(init_triton):\
-    code_init = open(init_triton).read();\
-    code_init = code_init.replace('rms_rope', '# rms_rope');\
-    open(init_triton, 'w').write(code_init);\
-\
-print('[Build] comfy_kitchen patched successfully for all kernels');\
-"
+RUN /opt/venv/bin/python3 - <<'EOF'
+import importlib.util
+import os
+
+spec = importlib.util.find_spec('comfy_kitchen')
+pkg_dir = spec.submodule_search_locations[0]
+
+# Patch na.py typing
+path_na = os.path.join(pkg_dir, 'backends', 'eager', 'na.py')
+with open(path_na, 'r') as f:
+    code_na = f.read()
+
+if 'from typing import' in code_na:
+    code_na = code_na.replace('from typing import', 'from typing import Sequence, Optional, List,')
+else:
+    code_na = 'from typing import Sequence, Optional, List\n' + code_na
+
+code_na = code_na.replace('list[int]', 'Sequence[int]').replace('list[bool]', 'Sequence[bool]').replace('float | None', 'Optional[float]')
+
+with open(path_na, 'w') as f:
+    f.write(code_na)
+
+# Patch triton init to remove broken rms_rope registration so it uses eager/cuda
+init_triton = os.path.join(pkg_dir, 'backends', 'triton', '__init__.py')
+if os.path.exists(init_triton):
+    with open(init_triton, 'r') as f:
+        code_init = f.read()
+    code_init = code_init.replace('rms_rope', '# rms_rope')
+    with open(init_triton, 'w') as f:
+        f.write(code_init)
+
+print('[Build] comfy_kitchen patched successfully for all kernels')
+EOF
 
 # 5. Copy warmup script
 COPY warmup.py /app/
