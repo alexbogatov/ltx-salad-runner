@@ -12,19 +12,25 @@ echo "===================================================="
 
 STORAGE_DIR="/workspace/models"
 
-# Clean up stale processes and locks
+# Clean up stale processes and database locks
 pkill -f "main.py" || true
 rm -f /app/ComfyUI/user/comfyui.db.lock || true
 
-# 1. Ensure storage directories exist
+# 1. Ensure persistent workspace directories exist
 mkdir -p "${STORAGE_DIR}/diffusion_models" \
          "${STORAGE_DIR}/text_encoders" \
          "${STORAGE_DIR}/vae" \
          "${STORAGE_DIR}/latent_upscale_models" \
          "/workspace/output"
 
-# 2. Symlink persistent storage into ComfyUI instance
+# 2. Reset ComfyUI directory targets and symlink persistent storage cleanly
 mkdir -p /app/ComfyUI/models
+rm -rf /app/ComfyUI/output \
+       /app/ComfyUI/models/diffusion_models \
+       /app/ComfyUI/models/text_encoders \
+       /app/ComfyUI/models/vae \
+       /app/ComfyUI/models/latent_upscale_models
+
 ln -sfn /workspace/output /app/ComfyUI/output
 ln -sfn "${STORAGE_DIR}/diffusion_models" /app/ComfyUI/models/diffusion_models
 ln -sfn "${STORAGE_DIR}/text_encoders" /app/ComfyUI/models/text_encoders
@@ -37,8 +43,7 @@ if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
     echo "[Idle Mode] Keeping pod alive for debugging..."
     exec sleep infinity
 else
-
-    # Launch ComfyUI with strict GPU residency and enabled Triton backend
+    # Launch ComfyUI with full GPU residency, fast math, and Triton
     /opt/venv/bin/python3 /app/ComfyUI/main.py \
         --listen 0.0.0.0 \
         --port 8188 \
