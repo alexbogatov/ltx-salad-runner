@@ -1,6 +1,6 @@
 import os from 'os';
-import { readFileSync, createReadStream, existsSync } from 'fs';
-import { mkdir, writeFile, stat, unlink } from 'fs/promises';
+import { readFileSync, createReadStream } from 'fs';
+import { mkdir, writeFile, readdir, stat, unlink } from 'fs/promises';
 import { join } from 'path';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
@@ -10,10 +10,8 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 const COMFY_PORT = 8188;
 const COMFY_HOST = `http://127.0.0.1:${COMFY_PORT}`;
 const WORKFLOW_PATH = join(process.cwd(), 'video_ltx2_5_i2v.json');
-
-const BASE_COMFY_DIR = existsSync('/app/ComfyUI') ? '/app/ComfyUI' : join(process.cwd(), 'ComfyUI');
-const INPUT_DIR = join(BASE_COMFY_DIR, 'input');
-const OUTPUT_DIR = join(BASE_COMFY_DIR, 'output');
+const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
+const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
 
 // Identity strictly derived from the OS Hostname
 const MACHINE_ID = os.hostname();
@@ -22,8 +20,7 @@ let HYPERSTACK_VM_ID = null;
 
 // API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
-const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS) || 1;
-const MAX_EMPTY_POLLS = 3;
+const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS) || 5;
 const MAX_RETRY_COUNT = 2;
 
 // Hyperstack Configuration
@@ -37,20 +34,13 @@ const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const R2_CDN_URL = process.env.R2_CDN_URL;
 
-console.log('====================================================');
-console.log(`[Config] Machine ID:       ${MACHINE_ID}`);
-console.log(`[Config] API Endpoint:     ${API_BASE_URL}`);
-console.log(`[Config] Comfy Host:       ${COMFY_HOST}`);
-console.log(`[Config] Comfy Output Dir: ${OUTPUT_DIR}`);
-console.log(`[Config] R2 Account ID:    ${R2_ACCOUNT_ID ? 'Configured (' + R2_ACCOUNT_ID.slice(0, 6) + '...)' : 'MISSING'}`);
-console.log(`[Config] R2 Bucket:        ${R2_BUCKET_NAME || 'MISSING'}`);
-console.log(`[Config] R2 CDN URL:       ${R2_CDN_URL || 'MISSING'}`);
-console.log('====================================================');
-
 if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
-    console.error('[CRITICAL] Missing required R2 environment variables. Uploads will fail!');
+    console.warn('[Config Warning] Missing one or more R2 credentials.');
 }
 
+// ============================================
+// R2 Client
+// ============================================
 const s3_client = new S3Client({
     region: 'auto',
     endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -61,16 +51,9 @@ const s3_client = new S3Client({
 });
 
 // ============================================
-// Helper Functions & Lifecycle Control
+// Helper Functions
 // ============================================
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const format_prompt_preview = (text, maxLength = 100) => {
-    if (!text) return '(empty)';
-    const singleLine = text.replace(/\s+/g, ' ').trim();
-    if (singleLine.length <= maxLength) return `"${singleLine}"`;
-    return `"${singleLine.slice(0, maxLength)}..." [${singleLine.length} chars]`;
-};
 
 const get_api_headers = () => ({
     'worker-auth': WORKER_SECRET,
@@ -86,17 +69,23 @@ const get_hyperstack_headers = () => ({
 // Dynamic Registration & Cloud Discovery
 // ============================================
 const register_with_api = async () => {
-    console.log(`[Worker Init] Registering hostname '${MACHINE_ID}' with central API (${API_BASE_URL})...`);
+    console.log(`[Worker Init] Registering hostname '${MACHINE_ID}' with central API...`);
 
     while (!WORKER_SECRET) {
         try {
             const res = await fetch(`${API_BASE_URL}/v1/worker/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ MACHINE_ID, model_type: 'ltx-i2v' })
+                body: JSON.stringify({ MACHINE_ID })
             });
 
-            const data = await res.json();
+            const text = await res.text();
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (_) {
+                data = { raw: text };
+            }
 
             if (res.ok && data.STATUS === 'OK' && data.SECRET) {
                 WORKER_SECRET = data.SECRET;
@@ -104,7 +93,8 @@ const register_with_api = async () => {
                 return WORKER_SECRET;
             }
 
-            console.error(`[Worker Init] Registration rejected:`, JSON.stringify(data));
+            console.error(`[Worker Init] Registration rejected (HTTP ${res.status}):`, JSON.stringify(data));
+            console.log('[Worker Init] Retrying in 5 seconds...');
         } catch (err) {
             console.error(`[Worker Init] Connection error: ${err.message}. Retrying in 5s...`);
         }
@@ -155,6 +145,8 @@ const hibernate_vm = async () => {
         if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
 
         console.log(`[Hibernate] Requesting hibernation for VM ${vm_id}...`);
+        
+        // GET /core/virtual-machines/{vm_id}/hibernate
         const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
         const res = await fetch(url, {
             method: 'GET',
@@ -167,7 +159,7 @@ const hibernate_vm = async () => {
         }
 
         const data = await res.json();
-        console.log('[Hibernate] VM hibernation successfully initiated:', JSON.stringify(data));
+        console.log('[Hibernate] VM hibernation successfully initiated:', data);
         return data;
     } catch (err) {
         console.error('[Hibernate Error]:', err.message);
@@ -176,7 +168,7 @@ const hibernate_vm = async () => {
 };
 
 // ============================================
-// Central Backend API Handshakes
+// API Task Operations
 // ============================================
 const poll_for_job = async (job_type, model) => {
     try {
@@ -187,7 +179,11 @@ const poll_for_job = async (job_type, model) => {
         });
 
         if (response.status === 404) return null;
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
+        if (!response.ok) {
+            const err_text = await response.text();
+            throw new Error(`HTTP ${response.status}: ${err_text}`);
+        }
 
         return await response.json();
     } catch (err) {
@@ -197,43 +193,54 @@ const poll_for_job = async (job_type, model) => {
 };
 
 const complete_job = async (job_id, output_url, generation_time_sec) => {
-    console.log(`[API Handshake] Submitting completion for job '${job_id}'...`);
-    console.log(`[API Handshake] Output URL: ${output_url} | Time: ${generation_time_sec.toFixed(2)}s`);
-
-    const response = await fetch(`${API_BASE_URL}/v1/worker/complete`, {
+    const url = `${API_BASE_URL}/v1/worker/complete`;
+    const response = await fetch(url, {
         method: 'POST',
         headers: get_api_headers(),
-        body: JSON.stringify({ job_id, output_url, generation_time_sec })
+        body: JSON.stringify({
+            job_id,
+            output_url,
+            generation_time_sec
+        })
     });
 
     if (!response.ok) {
         const err_text = await response.text();
-        throw new Error(`API complete error: HTTP ${response.status} - ${err_text}`);
+        throw new Error(`HTTP ${response.status}: ${err_text}`);
     }
-    const result = await response.json();
-    console.log(`[API Handshake] Job '${job_id}' marked completed on server:`, JSON.stringify(result));
-    return result;
+
+    return await response.json();
 };
 
 const fail_job = async (job_id, error_message) => {
-    console.log(`[API Handshake] Reporting failure for job '${job_id}': ${error_message}`);
-    const response = await fetch(`${API_BASE_URL}/v1/worker/fail`, {
+    const url = `${API_BASE_URL}/v1/worker/fail`;
+    const response = await fetch(url, {
         method: 'POST',
         headers: get_api_headers(),
-        body: JSON.stringify({ job_id, error_message })
+        body: JSON.stringify({
+            job_id,
+            error_message
+        })
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
+    if (!response.ok) {
+        const err_text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${err_text}`);
+    }
+
     return await response.json();
 };
 
 // ============================================
-// ComfyUI Engine Interface
+// ComfyUI Engine
 // ============================================
 const wait_for_comfy_ready = async () => {
     console.log('[ComfyUI] Probing server readiness on port 8188...');
+    const health_url = `${COMFY_HOST}/history`;
+
     while (true) {
         try {
-            const res = await fetch(`${COMFY_HOST}/history`);
+            const res = await fetch(health_url);
             if (res.ok) {
                 console.log('[ComfyUI] Server online and responsive.');
                 break;
@@ -243,61 +250,40 @@ const wait_for_comfy_ready = async () => {
     }
 };
 
-const optimize_and_configure_workflow = (workflow, job_params) => {
-    const { image_filename, prompt_text, duration_sec, fps = 25 } = job_params;
-
+const update_workflow_duration = (workflow, duration_seconds, fps = 24) => {
     for (const [node_id, node] of Object.entries(workflow)) {
-        if (!node || !node.inputs) continue;
-
-        // 1. Duration & FPS
-        if (node.class_type === 'PrimitiveInt') {
-            const title = node._meta?.title?.toLowerCase() || '';
-            if (title === 'duration' && duration_sec) {
-                node.inputs.value = Number(duration_sec);
-            } else if (title === 'frame rate' && fps) {
-                node.inputs.value = Number(fps);
-            }
+        if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
+            node.inputs.value = duration_seconds;
         }
-
-        // 2. Random Seeds
+        if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Frame Rate') {
+            node.inputs.value = fps;
+        }
         if (node.class_type === 'RandomNoise') {
             node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
         }
+    }
+    return workflow;
+};
 
-        // 3. Load First Frame Image
-        if (node.class_type === 'LoadImage' && image_filename) {
+const set_workflow_image = (workflow, image_filename) => {
+    for (const [node_id, node] of Object.entries(workflow)) {
+        if (node.class_type === 'LoadImage') {
             node.inputs.image = image_filename;
         }
+    }
+    return workflow;
+};
 
-        // 4. Positive vs Negative Prompts
-        if (node.class_type === 'CLIPTextEncode') {
-            const title = node._meta?.title?.toLowerCase() || '';
-            if (title.includes('negative')) {
-                node.inputs.text = ''; // Zero-out negative prompt for distilled 1.0 CFG passes
-            } else if (prompt_text) {
-                node.inputs.text = prompt_text;
-            }
-        }
-
-        // Also check multiline prompt input primitive
-        if (node.class_type === 'PrimitiveStringMultiline' && prompt_text) {
-            node.inputs.value = prompt_text;
-        }
-
-        // 5. Optimize Tiled VAE for A100 (80GB VRAM allows tile_size 1024)
-        if (node.class_type === 'VAEDecodeTiled') {
-            node.inputs.tile_size = 1024;
-            node.inputs.overlap = 64;
-            node.inputs.temporal_size = 4096;
-            node.inputs.temporal_overlap = 32;
+const set_workflow_prompt = (workflow, prompt_text) => {
+    for (const [node_id, node] of Object.entries(workflow)) {
+        if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+            node.inputs.text = prompt_text;
         }
     }
-
     return workflow;
 };
 
 const execute_workflow = async (workflow, job_id) => {
-    console.log(`[ComfyUI] Submitting prompt graph for job '${job_id}'...`);
     const response = await fetch(`${COMFY_HOST}/prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -306,221 +292,167 @@ const execute_workflow = async (workflow, job_id) => {
 
     if (!response.ok) {
         const err_text = await response.text();
-        throw new Error(`ComfyUI prompt rejected: HTTP ${response.status} - ${err_text}`);
+        throw new Error(`Workflow rejection: ${response.status} - ${err_text}`);
     }
 
     const { prompt_id } = await response.json();
-    console.log(`[ComfyUI] Job '${job_id}' accepted. Prompt ID: ${prompt_id}`);
     const start_time = Date.now();
 
     while (true) {
-        await sleep(1500);
+        await sleep(3000);
         const history_res = await fetch(`${COMFY_HOST}/history/${prompt_id}`);
+
         if (history_res.ok) {
             const history_data = await history_res.json();
-            const job_history = history_data[prompt_id];
-
-            if (job_history) {
-                const duration = (Date.now() - start_time) / 1000;
-
-                // Check for execution errors
-                if (job_history.status?.status_str === 'error') {
-                    const messages = job_history.status.messages || [];
-                    throw new Error(`ComfyUI execution error: ${JSON.stringify(messages)}`);
-                }
-
-                // Extract output video directly from SaveVideo or CreateVideo outputs
-                const outputs = job_history.outputs || {};
-                for (const nodeId in outputs) {
-                    const nodeOutput = outputs[nodeId];
-                    const mediaList = nodeOutput.videos || nodeOutput.images || nodeOutput.gifs || [];
-                    if (mediaList.length > 0) {
-                        const media = mediaList[0];
-                        const subfolder = media.subfolder ? `${media.subfolder}/` : '';
-                        const output_path = join(OUTPUT_DIR, `${subfolder}${media.filename}`);
-
-                        console.log(`[ComfyUI] Execution successful in ${duration.toFixed(2)}s.`);
-                        console.log(`[ComfyUI] Resolved output path: ${output_path}`);
-                        return { output_path, duration };
-                    }
-                }
-
-                throw new Error(`ComfyUI finished prompt ${prompt_id} but output node produced no video references.`);
+            if (history_data[prompt_id]) {
+                return (Date.now() - start_time) / 1000;
             }
         }
     }
 };
 
 // ============================================
-// Image & Video IO
+// Filesystem & S3 Operations
 // ============================================
-const download_image = async (url, filename) => {
-    console.log(`[Input IO] Downloading input image: ${url}`);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Input download failed: HTTP ${res.status} (${res.statusText})`);
+const find_latest_mp4 = async (dir) => {
+    const files = [];
+    const walk = async (current_dir) => {
+        try {
+            const entries = await readdir(current_dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const full_path = join(current_dir, entry.name);
+                if (entry.isDirectory()) {
+                    await walk(full_path);
+                } else if (entry.name.endsWith('.mp4')) {
+                    const stats = await stat(full_path);
+                    files.push({ path: full_path, mtime: stats.mtime });
+                }
+            }
+        } catch (_) {}
+    };
 
+    await walk(dir);
+    if (files.length === 0) return null;
+    files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    return files[0].path;
+};
+
+const download_image = async (url, filename) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Image download failed: ${res.statusText}`);
     const buffer = await res.arrayBuffer();
     await mkdir(INPUT_DIR, { recursive: true });
     const image_path = join(INPUT_DIR, filename);
     await writeFile(image_path, Buffer.from(buffer));
-
-    const stats = await stat(image_path);
-    console.log(`[Input IO] Input image saved: ${image_path} (${(stats.size / 1024).toFixed(1)} KB)`);
     return image_path;
 };
 
 const upload_to_r2 = async (file_path, job_id) => {
-    if (!existsSync(file_path)) {
-        throw new Error(`File not found for R2 upload at path: ${file_path}`);
-    }
-
-    const file_stats = await stat(file_path);
     const key = `generations/${job_id}.mp4`;
     const file_stream = createReadStream(file_path);
 
-    console.log(`[R2 Upload] Starting upload for job '${job_id}'...`);
-    console.log(`[R2 Upload] Local File:  ${file_path} (${(file_stats.size / 1024 / 1024).toFixed(2)} MB)`);
-    console.log(`[R2 Upload] Bucket:      ${R2_BUCKET_NAME}`);
-    console.log(`[R2 Upload] Key:         ${key}`);
-
-    const result = await s3_client.send(new PutObjectCommand({
+    await s3_client.send(new PutObjectCommand({
         Bucket: R2_BUCKET_NAME,
         Key: key,
         Body: file_stream,
         ContentType: 'video/mp4',
     }));
 
-    const httpStatus = result.$metadata?.httpStatusCode;
-    console.log(`[R2 Upload] S3 PutObject finished with HTTP status: ${httpStatus}`);
-
-    if (httpStatus && httpStatus !== 200 && httpStatus !== 204) {
-        throw new Error(`R2 upload returned non-success HTTP status: ${httpStatus}`);
-    }
-
-    const public_url = `${R2_CDN_URL}/${key}`;
-    console.log(`[R2 Upload] Public CDN destination URL: ${public_url}`);
-    return public_url;
+    return `${R2_CDN_URL}/${key}`;
 };
 
-const cleanup_job_files = async (input_path, output_path) => {
-    console.log('[Cleanup] Removing temporary job artifacts from disk...');
-    if (input_path) {
-        try {
-            await unlink(input_path);
-            console.log(`[Cleanup] Deleted input:  ${input_path}`);
-        } catch (e) {
-            console.warn(`[Cleanup Warning] Could not remove input file: ${e.message}`);
-        }
-    }
-    if (output_path) {
-        try {
-            await unlink(output_path);
-            console.log(`[Cleanup] Deleted output: ${output_path}`);
-        } catch (e) {
-            console.warn(`[Cleanup Warning] Could not remove output file: ${e.message}`);
-        }
+const cleanup_files = async (job_id) => {
+    try { await unlink(join(INPUT_DIR, `${job_id}.jpg`)); } catch (_) {}
+    const output_file = await find_latest_mp4(OUTPUT_DIR);
+    if (output_file) {
+        try { await unlink(output_file); } catch (_) {}
     }
 };
 
 // ============================================
-// Main Job Processing Loop
+// Job Orchestrator
 // ============================================
 const process_job = async (job_data) => {
     const { job_id, image_url, duration_sec, prompt, job_type, model } = job_data;
     let retry_count = 0;
-    let input_path = null;
-    let output_path = null;
 
-    console.log(`\n====================================================`);
-    console.log(`[Job ${job_id}] Processing (${job_type || 'generate'}/${model || 'ltx-i2v'}) - Duration: ${duration_sec || 2}s`);
-    console.log(`[Job ${job_id}] Prompt: ${format_prompt_preview(prompt)}`);
-    console.log(`====================================================`);
+    console.log(`[Job ${job_id}] Processing (${job_type}/${model}) - Duration: ${duration_sec}s`);
 
     while (retry_count < MAX_RETRY_COUNT) {
         try {
-            const input_filename = `${job_id}_input.jpg`;
-            input_path = await download_image(image_url, input_filename);
+            const image_filename = `${job_id}.jpg`;
+            await download_image(image_url, image_filename);
 
             const raw_workflow = readFileSync(WORKFLOW_PATH, 'utf-8');
             let workflow = JSON.parse(raw_workflow);
 
-            // Apply all dynamic modifications without touching the static JSON file
-            workflow = optimize_and_configure_workflow(workflow, {
-                image_filename: input_filename,
-                prompt_text: prompt,
-                duration_sec: duration_sec || 2,
-                fps: 25
-            });
+            workflow = update_workflow_duration(workflow, duration_sec);
+            workflow = set_workflow_image(workflow, image_filename);
+            workflow = set_workflow_prompt(workflow, prompt);
 
-            console.log(`[Job ${job_id}] Configured workflow graph (VAE Tile Size: 1024, Negative: Empty)`);
+            const generation_time = await execute_workflow(workflow, job_id);
+            const output_file = await find_latest_mp4(OUTPUT_DIR);
 
-            // Execute inside ComfyUI
-            const { output_path: generated_file, duration } = await execute_workflow(workflow, job_id);
-            output_path = generated_file;
+            if (!output_file) throw new Error('Generation finished but MP4 was not found.');
 
-            // Stream upload to Cloudflare R2
-            const r2_url = await upload_to_r2(output_path, job_id);
+            const r2_url = await upload_to_r2(output_file, job_id);
+            await complete_job(job_id, r2_url, generation_time);
+            await cleanup_files(job_id);
 
-            // Handshake back to orchestrator API
-            await complete_job(job_id, r2_url, duration);
-
-            // Cleanup local artifacts
-            await cleanup_job_files(input_path, output_path);
-
-            console.log(`[Job ${job_id}] Processing cycle complete in ${duration.toFixed(2)}s\n`);
+            console.log(`[Job ${job_id}] Finished successfully in ${generation_time.toFixed(2)}s`);
             return true;
         } catch (err) {
             retry_count++;
-            console.error(`[Job ${job_id}] Attempt ${retry_count}/${MAX_RETRY_COUNT} failed with error:`);
-            console.error(err.stack || err.message);
+            console.error(`[Job ${job_id}] Attempt ${retry_count} failed: ${err.message}`);
 
             if (retry_count >= MAX_RETRY_COUNT) {
-                console.error(`[Job ${job_id}] Max retries reached. Reporting failure to server...`);
                 try { await fail_job(job_id, err.message); } catch (_) {}
-                await cleanup_job_files(input_path, output_path);
                 return false;
             }
-            console.log(`[Job ${job_id}] Waiting ${retry_count * 3}s before retry...`);
-            await sleep(retry_count * 3000);
+
+            await sleep(retry_count * 5000);
         }
     }
     return false;
 };
 
+// ============================================
+// Main Execution Entrypoint
+// ============================================
 const worker_loop = async () => {
-    console.log(`[Worker] Daemon started on machine: ${MACHINE_ID}`);
+    console.log(`[Worker] Started on host: ${MACHINE_ID}`);
 
-    // 1. Handshake with Central API
+    // 1. Handshake with API to get secret
     await register_with_api();
 
-    // 2. Discover Hyperstack VM ID for Hibernate Control
+    // 2. Discover Cloud VM Info
     await resolve_hyperstack_vm_id();
 
-    // 3. Ensure Local Workspaces Exist
+    // 3. Prepare Workspaces
     await mkdir(INPUT_DIR, { recursive: true });
     await mkdir(OUTPUT_DIR, { recursive: true });
 
-    // 4. Wait for ComfyUI to respond on port 8188
+    // 4. Wait for ComfyUI
     await wait_for_comfy_ready();
 
     let empty_poll_count = 0;
-    const job_type = process.env.JOB_TYPE || 'generate';
-    const model = process.env.MODEL || 'ltx-i2v';
+    const MAX_EMPTY_POLLS = 3;
 
-    console.log(`[Worker] Polling for '${model}' jobs every ${POLL_INTERVAL_SECONDS}s...`);
+    console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s...`);
 
     while (true) {
         try {
+            const job_type = process.env.JOB_TYPE || 'generate';
+            const model = process.env.MODEL || 'ltx-i2v';
+
             const result = await poll_for_job(job_type, model);
 
-            if (!result || !result.success || !result.data) {
+            if (!result || !result.success) {
                 empty_poll_count++;
-                if (empty_poll_count % 5 === 0 || empty_poll_count === 1) {
-                    console.log(`[Worker] No jobs in queue (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
-                }
+                console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
                 if (empty_poll_count >= MAX_EMPTY_POLLS) {
-                    console.log('[Worker] Inactivity threshold reached. Initiating VM hibernation...');
+                    console.log('[Worker] Inactivity limit reached. Initiating VM hibernation...');
                     await hibernate_vm();
                     process.exit(0);
                 }
@@ -531,25 +463,20 @@ const worker_loop = async () => {
 
             empty_poll_count = 0;
             await process_job(result.data);
-            await sleep(1000);
+            await sleep(2000);
+
         } catch (err) {
-            console.error('[Worker] Fatal error in main worker loop:', err.message);
+            console.error('[Worker] Loop error:', err.message);
+            empty_poll_count++;
             await sleep(POLL_INTERVAL_SECONDS * 1000);
         }
     }
 };
 
-process.on('SIGINT', () => {
-    console.log('[Worker] SIGINT received. Shutting down...');
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('[Worker] SIGTERM received. Shutting down...');
-    process.exit(0);
-});
+process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));
 
 worker_loop().catch((err) => {
-    console.error('[Worker] Uncaught exception:', err);
+    console.error('[Worker] Fatal error:', err);
     process.exit(1);
 });
