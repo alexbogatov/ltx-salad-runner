@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash 
 set -eo pipefail
 
 export GIT_TERMINAL_PROMPT=0
