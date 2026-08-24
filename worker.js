@@ -13,17 +13,19 @@ const WORKFLOW_PATH = join(process.cwd(), 'video_ltx2_5_i2v.json');
 const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
 const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
 
-// Identity strictly derived from the OS Hostname
+// Machine identity and static secret from environment
 const MACHINE_ID = os.hostname();
-let WORKER_SECRET = null;
+const WORKER_API_SECRET = process.env.WORKER_API_SECRET;
+
+// Discovery cache: null = unprobed, false = not a hyperstack instance, string/number = VM ID
 let HYPERSTACK_VM_ID = null;
 
 // API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
-const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS) || 5;
-const MAX_RETRY_COUNT = 2;
+const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 1;
+const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
 
-// Hyperstack Configuration
+// Hyperstack Configuration (Optional, for bare-metal/VM self-hibernation)
 const HYPERSTACK_API_URL = process.env.HYPERSTACK_API_URL || 'https://infrahub-api.nexgencloud.com/v1';
 const HYPERSTACK_API_KEY = process.env.HYPERSTACK_API_KEY;
 
@@ -55,8 +57,17 @@ const s3_client = new S3Client({
 // ============================================
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const is_modal_runtime = () => {
+    return Boolean(
+        process.env.MODAL_TASK_ID || 
+        process.env.MODAL_IS_REMOTE || 
+        process.env.MODAL_ENVIRONMENT
+    );
+};
+
 const get_api_headers = () => ({
-    'worker-auth': WORKER_SECRET,
+    'worker-auth': WORKER_API_SECRET,
+    'x-machine-id': MACHINE_ID,
     'content-type': 'application/json'
 });
 
@@ -66,75 +77,45 @@ const get_hyperstack_headers = () => ({
 });
 
 // ============================================
-// Dynamic Registration & Cloud Discovery
+// Cloud Discovery & Teardown Handlers
 // ============================================
-const register_with_api = async () => {
-    console.log(`[Worker Init] Registering hostname '${MACHINE_ID}' with central API...`);
-
-    while (!WORKER_SECRET) {
-        try {
-            const res = await fetch(`${API_BASE_URL}/v1/worker/register`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ MACHINE_ID })
-            });
-
-            const text = await res.text();
-            let data;
-            try {
-                data = JSON.parse(text);
-            } catch (_) {
-                data = { raw: text };
-            }
-
-            if (res.ok && data.STATUS === 'OK' && data.SECRET) {
-                WORKER_SECRET = data.SECRET;
-                console.log(`[Worker Init] Host '${MACHINE_ID}' authorized. Secret token established.`);
-                return WORKER_SECRET;
-            }
-
-            console.error(`[Worker Init] Registration rejected (HTTP ${res.status}):`, JSON.stringify(data));
-            console.log('[Worker Init] Retrying in 5 seconds...');
-        } catch (err) {
-            console.error(`[Worker Init] Connection error: ${err.message}. Retrying in 5s...`);
-        }
-        await sleep(5000);
-    }
-};
-
 const resolve_hyperstack_vm_id = async () => {
-    if (HYPERSTACK_VM_ID) return HYPERSTACK_VM_ID;
-    if (!HYPERSTACK_API_KEY) {
-        console.warn('[Hyperstack] HYPERSTACK_API_KEY missing. Skipping VM discovery.');
+    if (HYPERSTACK_VM_ID !== null) return HYPERSTACK_VM_ID;
+
+    // Short-circuit immediately on Modal to avoid redundant network calls
+    if (is_modal_runtime() || !HYPERSTACK_API_KEY) {
+        HYPERSTACK_VM_ID = false;
         return null;
     }
 
     try {
-        console.log(`[Hyperstack] Querying VM ID for hostname '${MACHINE_ID}'...`);
+        console.log(`[Hyperstack] Checking if hostname '${MACHINE_ID}' exists in Hyperstack account...`);
         const res = await fetch(`${HYPERSTACK_API_URL}/core/virtual-machines`, {
             method: 'GET',
             headers: get_hyperstack_headers()
         });
 
         if (!res.ok) {
-            const err_text = await res.text();
-            throw new Error(`HTTP ${res.status}: ${err_text}`);
+            HYPERSTACK_VM_ID = false;
+            return null;
         }
 
         const data = await res.json();
         const instances = data.instances || [];
-        const match = instances.find((vm) => vm.name.toLowerCase() === MACHINE_ID.toLowerCase());
+        const match = instances.find((vm) => vm.name?.toLowerCase() === MACHINE_ID.toLowerCase());
 
         if (!match) {
-            console.warn(`[Hyperstack] VM '${MACHINE_ID}' not found in active instances list.`);
+            console.log(`[Platform Detection] Host '${MACHINE_ID}' not in Hyperstack inventory. Disabling Hyperstack hibernation.`);
+            HYPERSTACK_VM_ID = false;
             return null;
         }
 
         HYPERSTACK_VM_ID = match.id;
-        console.log(`[Hyperstack] Discovered VM ID: ${HYPERSTACK_VM_ID} (Name: ${match.name})`);
+        console.log(`[Platform Detection] Hyperstack VM verified (ID: ${HYPERSTACK_VM_ID})`);
         return HYPERSTACK_VM_ID;
     } catch (err) {
-        console.error('[Hyperstack Discovery Error]:', err.message);
+        console.warn('[Hyperstack Discovery Failed]:', err.message);
+        HYPERSTACK_VM_ID = false;
         return null;
     }
 };
@@ -145,8 +126,6 @@ const hibernate_vm = async () => {
         if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
 
         console.log(`[Hibernate] Requesting hibernation for VM ${vm_id}...`);
-        
-        // GET /core/virtual-machines/{vm_id}/hibernate
         const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
         const res = await fetch(url, {
             method: 'GET',
@@ -165,6 +144,28 @@ const hibernate_vm = async () => {
         console.error('[Hibernate Error]:', err.message);
         return null;
     }
+};
+
+const handle_inactivity_shutdown = async () => {
+    console.log('[Worker] Inactivity limit reached. Initiating teardown...');
+
+    // 1. Modal Teardown: Clean container exit stops billing immediately
+    if (is_modal_runtime()) {
+        console.log('[Teardown: Modal] Serverless task finished. Exiting container.');
+        process.exit(0);
+    }
+
+    // 2. Hyperstack Teardown: Hibernate instance if found in inventory
+    const vm_id = await resolve_hyperstack_vm_id();
+    if (vm_id) {
+        console.log(`[Teardown: Hyperstack] Hibernating Hyperstack VM ${vm_id}...`);
+        await hibernate_vm();
+        process.exit(0);
+    }
+
+    // 3. Generic / Local / Other providers (RunPod, Salad)
+    console.log('[Teardown: Generic] Exiting worker process.');
+    process.exit(0);
 };
 
 // ============================================
@@ -422,17 +423,16 @@ const process_job = async (job_data) => {
 const worker_loop = async () => {
     console.log(`[Worker] Started on host: ${MACHINE_ID}`);
 
-    // 1. Handshake with API to get secret
-    await register_with_api();
+    if (!WORKER_API_SECRET) {
+        console.error('[Worker Fatal] WORKER_API_SECRET environment variable is missing.');
+        process.exit(1);
+    }
 
-    // 2. Discover Cloud VM Info
-    await resolve_hyperstack_vm_id();
-
-    // 3. Prepare Workspaces
+    // 1. Prepare Workspaces
     await mkdir(INPUT_DIR, { recursive: true });
     await mkdir(OUTPUT_DIR, { recursive: true });
 
-    // 4. Wait for ComfyUI
+    // 2. Wait for ComfyUI
     await wait_for_comfy_ready();
 
     let empty_poll_count = 0;
@@ -452,9 +452,7 @@ const worker_loop = async () => {
                 console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
                 if (empty_poll_count >= MAX_EMPTY_POLLS) {
-                    console.log('[Worker] Inactivity limit reached. Initiating VM hibernation...');
-                    await hibernate_vm();
-                    process.exit(0);
+                    await handle_inactivity_shutdown();
                 }
 
                 await sleep(POLL_INTERVAL_SECONDS * 1000);
