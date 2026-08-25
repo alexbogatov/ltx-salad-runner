@@ -9,9 +9,62 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 // ============================================
 const COMFY_PORT = 8188;
 const COMFY_HOST = `http://127.0.0.1:${COMFY_PORT}`;
-const WORKFLOW_PATH = join(process.cwd(), 'video_ltx2_5_i2v.json');
 const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
 const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
+
+// Workflow routing map
+const WORKFLOW_MAP = {
+  'ltx-i2v': join(process.cwd(), 'video_ltx2_5_i2v.json'),
+  'ltx-t2v': join(process.cwd(), 'video_ltx2_5_t2v.json'),
+  'ltx-fflf2v': join(process.cwd(), 'video_ltx2_5_flf2v.json'),
+};
+
+// Aspect ratio & Resolution mappings for ResolutionSelector nodes
+const ASPECT_RATIO_MAP = {
+  '16:9': '16:9 (Widescreen)',
+  '9:16': '9:16 (Portrait Widescreen)',
+  '1:1': '1:1 (Square)',
+  '4:3': '4:3 (Standard)',
+  '3:4': '3:4 (Portrait Standard)',
+  '3:2': '3:2 (Photo)',
+  '2:3': '2:3 (Portrait Photo)',
+  '21:9': '21:9 (Ultrawide)',
+};
+
+const RESOLUTION_MEGAPIXELS = {
+  '720p': 0.9,
+  '1080p': 2.1,
+  '2k-hd': 3.7,
+  '4k-hd': 8.3,
+};
+
+// Pixel dimensions for nodes that require explicit Width & Height (e.g. ltx-fflf2v)
+const RESOLUTION_DIMENSIONS = {
+  '16:9': {
+    '720p': { width: 1280, height: 720 },
+    '1080p': { width: 1920, height: 1080 },
+    '2k-hd': { width: 2560, height: 1440 },
+    '4k-hd': { width: 3840, height: 2160 }
+  },
+  '9:16': {
+    '720p': { width: 720, height: 1280 },
+    '1080p': { width: 1080, height: 1920 },
+    '2k-hd': { width: 1440, height: 2560 },
+    '4k-hd': { width: 2160, height: 3840 }
+  },
+  '1:1': {
+    '720p': { width: 1024, height: 1024 },
+    '1080p': { width: 1440, height: 1440 },
+    '2k-hd': { width: 1920, height: 1920 },
+    '4k-hd': { width: 2880, height: 2880 }
+  },
+  '4:3': {
+    '720p': { width: 960, height: 720 },
+    '1080p': { width: 1440, height: 1080 },
+    '2k-hd': { width: 1920, height: 1440 },
+    '4k-hd': { width: 2880, height: 2160 }
+  }
+};
 
 // Machine identity and static secret from environment
 const MACHINE_ID = os.hostname();
@@ -28,7 +81,7 @@ const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
 const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 1;
 const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
 
-// Hyperstack Configuration (Optional, for bare-metal/VM self-hibernation)
+// Hyperstack Configuration
 const HYPERSTACK_API_URL = process.env.HYPERSTACK_API_URL || 'https://infrahub-api.nexgencloud.com/v1';
 const HYPERSTACK_API_KEY = process.env.HYPERSTACK_API_KEY;
 
@@ -71,13 +124,15 @@ const is_modal_runtime = () => {
 const get_api_headers = () => ({
   'worker-auth': WORKER_API_SECRET,
   'x-machine-id': MACHINE_ID,
-  'content-type': 'application/json'
+  'content-type': 'application/json',
 });
 
 const get_hyperstack_headers = () => ({
   'api_key': HYPERSTACK_API_KEY,
-  'content-type': 'application/json'
+  'content-type': 'application/json',
 });
+
+const get_random_seed = () => Math.floor(Math.random() * 1000000000000000);
 
 // ============================================
 // Cloud Discovery & Teardown Handlers
@@ -94,7 +149,7 @@ const resolve_hyperstack_vm_id = async () => {
     console.log(`[Hyperstack] Checking if hostname '${MACHINE_ID}' exists in Hyperstack account...`);
     const res = await fetch(`${HYPERSTACK_API_URL}/core/virtual-machines`, {
       method: 'GET',
-      headers: get_hyperstack_headers()
+      headers: get_hyperstack_headers(),
     });
 
     if (!res.ok) {
@@ -131,7 +186,7 @@ const hibernate_vm = async () => {
     const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
     const res = await fetch(url, {
       method: 'GET',
-      headers: get_hyperstack_headers()
+      headers: get_hyperstack_headers(),
     });
 
     if (!res.ok) {
@@ -184,7 +239,7 @@ const poll_for_job = async (job_type, model) => {
     const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&model=${model}`;
     const response = await fetch(url, {
       method: 'GET',
-      headers: get_api_headers()
+      headers: get_api_headers(),
     });
 
     if (response.status === 404) return null;
@@ -209,8 +264,8 @@ const complete_job = async (job_id, output_url, generation_time_sec) => {
     body: JSON.stringify({
       job_id,
       output_url,
-      generation_time_sec
-    })
+      generation_time_sec,
+    }),
   });
 
   if (!response.ok) {
@@ -228,8 +283,8 @@ const fail_job = async (job_id, error_message) => {
     headers: get_api_headers(),
     body: JSON.stringify({
       job_id,
-      error_message
-    })
+      error_message,
+    }),
   });
 
   if (!response.ok) {
@@ -241,7 +296,7 @@ const fail_job = async (job_id, error_message) => {
 };
 
 // ============================================
-// ComfyUI Engine
+// ComfyUI Engine & Targeted Workflow Mutation
 // ============================================
 const wait_for_comfy_ready = async () => {
   console.log('[ComfyUI] Probing server readiness on port 8188...');
@@ -259,36 +314,108 @@ const wait_for_comfy_ready = async () => {
   }
 };
 
-const update_workflow_duration = (workflow, duration_seconds, fps = 24) => {
-  for (const [node_id, node] of Object.entries(workflow)) {
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
-      node.inputs.value = duration_seconds;
-    }
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Frame Rate') {
-      node.inputs.value = fps;
-    }
-    if (node.class_type === 'RandomNoise') {
-      node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
-    }
-  }
-  return workflow;
-};
+const mutate_workflow = (workflow, job_params, model, downloaded_filenames = []) => {
+  const {
+    job_id,
+    prompt = '',
+    duration_sec = 5,
+    fps = 24,
+    aspect_ratio = '16:9',
+    resolution = '1080p'
+  } = job_params;
 
-const set_workflow_image = (workflow, image_filename) => {
-  for (const [node_id, node] of Object.entries(workflow)) {
-    if (node.class_type === 'LoadImage') {
-      node.inputs.image = image_filename;
-    }
-  }
-  return workflow;
-};
+  const aspect_label = ASPECT_RATIO_MAP[aspect_ratio] || '16:9 (Widescreen)';
+  const mp_val = RESOLUTION_MEGAPIXELS[resolution] || 2.1;
+  const filename_prefix = `video/${model}_${job_id}`;
 
-const set_workflow_prompt = (workflow, prompt_text) => {
-  for (const [node_id, node] of Object.entries(workflow)) {
-    if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-      node.inputs.text = prompt_text;
+  switch (model) {
+    case 'ltx-i2v':
+      // Prompt & Motion
+      if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
+      if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
+      if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
+
+      // Clear Negative Prompt & Disable Prompt Enhancer
+      if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
+      if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
+
+      // Resolution & Aspect Ratio
+      if (workflow['403']?.inputs) {
+        workflow['403'].inputs.aspect_ratio = aspect_label;
+        workflow['403'].inputs.megapixels = mp_val;
+      }
+
+      // Input Image
+      if (workflow['395']?.inputs && downloaded_filenames[0]) {
+        workflow['395'].inputs.image = downloaded_filenames[0];
+      }
+
+      // Seeds
+      if (workflow['398:339']?.inputs) workflow['398:339'].inputs.noise_seed = get_random_seed();
+      if (workflow['398:338']?.inputs) workflow['398:338'].inputs.noise_seed = get_random_seed();
+
+      // Save Node
+      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
+      break;
+
+    case 'ltx-t2v':
+      // Prompt & Motion
+      if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
+      if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
+      if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
+
+      // Clear Negative Prompt & Disable Prompt Enhancer
+      if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
+      if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
+
+      // Resolution & Aspect Ratio
+      if (workflow['409']?.inputs) {
+        workflow['409'].inputs.aspect_ratio = aspect_label;
+        workflow['409'].inputs.megapixels = mp_val;
+      }
+
+      // Seeds
+      if (workflow['405:339']?.inputs) workflow['405:339'].inputs.noise_seed = get_random_seed();
+      if (workflow['405:338']?.inputs) workflow['405:338'].inputs.noise_seed = get_random_seed();
+
+      // Save Node
+      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
+      break;
+
+    case 'ltx-fflf2v': {
+      // Prompt & Motion
+      if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
+      if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
+      if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
+
+      // Clear Negative Prompt & Disable Prompt Enhancer
+      if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
+      if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
+
+      // Pixel Dimensions
+      const dims = (RESOLUTION_DIMENSIONS[aspect_ratio] && RESOLUTION_DIMENSIONS[aspect_ratio][resolution])
+        ? RESOLUTION_DIMENSIONS[aspect_ratio][resolution]
+        : { width: 1920, height: 1080 };
+
+      if (workflow['251:215']?.inputs) workflow['251:215'].inputs.value = dims.width;
+      if (workflow['251:216']?.inputs) workflow['251:216'].inputs.value = dims.height;
+
+      // First and Last Frames
+      if (workflow['31']?.inputs && downloaded_filenames[0]) workflow['31'].inputs.image = downloaded_filenames[0];
+      if (workflow['39']?.inputs && downloaded_filenames[1]) workflow['39'].inputs.image = downloaded_filenames[1];
+
+      // Seeds
+      if (workflow['251:196']?.inputs) workflow['251:196'].inputs.noise_seed = get_random_seed();
+
+      // Save Node
+      if (workflow['68']?.inputs) workflow['68'].inputs.filename_prefix = filename_prefix;
+      break;
     }
+
+    default:
+      throw new Error(`Unsupported model identifier in mutation: ${model}`);
   }
+
   return workflow;
 };
 
@@ -373,8 +500,7 @@ const upload_to_r2 = async (file_path, job_id) => {
 // ============================================
 // Background Upload Task Runner
 // ============================================
-const upload_and_complete_async = async (job_id, isolated_path, generation_time) => {
-  const input_file = join(INPUT_DIR, `${job_id}.jpg`);
+const upload_and_complete_async = async (job_id, isolated_path, downloaded_files, generation_time) => {
   try {
     const r2_url = await upload_to_r2(isolated_path, job_id);
     await complete_job(job_id, r2_url, generation_time);
@@ -384,7 +510,9 @@ const upload_and_complete_async = async (job_id, isolated_path, generation_time)
     try { await fail_job(job_id, err.message); } catch (_) {}
   } finally {
     try { await unlink(isolated_path); } catch (_) {}
-    try { await unlink(input_file); } catch (_) {}
+    for (const filename of downloaded_files) {
+      try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
+    }
   }
 };
 
@@ -392,48 +520,78 @@ const upload_and_complete_async = async (job_id, isolated_path, generation_time)
 // Job Orchestrator
 // ============================================
 const process_job = async (job_data) => {
-  const { job_id, image_url, duration_sec, prompt, job_type, model } = job_data;
-  let retry_count = 0;
+  const { id: job_id, model = 'ltx-i2v' } = job_data;
+  const input = job_data.input || {};
+  const prompt = input.prompt || job_data.prompt || '';
+  const images = input.images || (job_data.image_url ? [job_data.image_url] : []);
+  const duration_sec = parseInt(input.duration_sec || job_data.duration_sec, 10) || 5;
+  const fps = parseInt(input.fps, 10) || 24;
+  const aspect_ratio = input.aspect_ratio || '16:9';
+  const resolution = input.resolution || '1080p';
 
-  console.log(`[Job ${job_id}] Processing (${job_type}/${model}) - Duration: ${duration_sec}s`);
+  let retry_count = 0;
+  console.log(`[Job ${job_id}] Processing (${model}) - Duration: ${duration_sec}s - Res: ${resolution} (${aspect_ratio})`);
+
+  const workflow_file = WORKFLOW_MAP[model];
+  if (!workflow_file) {
+    const err_msg = `Unsupported model identifier: ${model}`;
+    console.error(`[Job ${job_id}] ${err_msg}`);
+    await fail_job(job_id, err_msg);
+    return false;
+  }
 
   while (retry_count < MAX_RETRY_COUNT) {
-    try {
-      const image_filename = `${job_id}.jpg`;
-      await download_image(image_url, image_filename);
+    const downloaded_filenames = [];
 
-      const raw_workflow = readFileSync(WORKFLOW_PATH, 'utf-8');
+    try {
+      // 1. Download input frames if present
+      for (let i = 0; i < images.length; i++) {
+        const ext = images[i].split('.').pop().split('?')[0] || 'jpg';
+        const filename = `${job_id}_frame_${i}.${ext}`;
+        await download_image(images[i], filename);
+        downloaded_filenames.push(filename);
+      }
+
+      // 2. Read base workflow
+      const raw_workflow = readFileSync(workflow_file, 'utf-8');
       let workflow = JSON.parse(raw_workflow);
 
-      workflow = update_workflow_duration(workflow, duration_sec);
-      workflow = set_workflow_image(workflow, image_filename);
-      workflow = set_workflow_prompt(workflow, prompt);
+      // 3. Mutate graph inputs via explicit node mapping
+      workflow = mutate_workflow(
+        workflow,
+        { job_id, prompt, duration_sec, fps, aspect_ratio, resolution },
+        model,
+        downloaded_filenames
+      );
 
+      // 4. Run diffusion generation
       const generation_time = await execute_workflow(workflow, job_id);
       const output_file = await find_latest_mp4(OUTPUT_DIR);
 
-      if (!output_file) throw new Error('Generation finished but MP4 was not found.');
+      if (!output_file) throw new Error('Generation finished but MP4 output was not found.');
 
-      // 1. Immediately rename and isolate file so next job cannot touch it
+      // 5. Isolate MP4 file for safe non-blocking background upload
       const isolated_path = join(OUTPUT_DIR, `uploading_${job_id}.mp4`);
       await rename(output_file, isolated_path);
 
       console.log(`[Job ${job_id}] Finished generation in ${generation_time.toFixed(2)}s. Offloaded upload to background.`);
 
-      // 2. Fire and track background upload (Zero GPU blocking)
-      const upload_task = upload_and_complete_async(job_id, isolated_path, generation_time);
+      // 6. Fire and track background upload (Zero GPU blocking)
+      const upload_task = upload_and_complete_async(job_id, isolated_path, downloaded_filenames, generation_time);
       active_uploads.add(upload_task);
       upload_task.finally(() => active_uploads.delete(upload_task));
 
-      // 3. Immediately return true so loop starts next video
       return true;
     } catch (err) {
       retry_count++;
       console.error(`[Job ${job_id}] Attempt ${retry_count} failed: ${err.message}`);
 
+      for (const filename of downloaded_filenames) {
+        try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
+      }
+
       if (retry_count >= MAX_RETRY_COUNT) {
         try { await fail_job(job_id, err.message); } catch (_) {}
-        try { await unlink(join(INPUT_DIR, `${job_id}.jpg`)); } catch (_) {}
         return false;
       }
 
@@ -454,11 +612,11 @@ const worker_loop = async () => {
     process.exit(1);
   }
 
-  // 1. Prepare Workspaces
+  // 1. Prepare input/output directories
   await mkdir(INPUT_DIR, { recursive: true });
   await mkdir(OUTPUT_DIR, { recursive: true });
 
-  // 2. Wait for ComfyUI
+  // 2. Wait for ComfyUI backend
   await wait_for_comfy_ready();
 
   let empty_poll_count = 0;
