@@ -16,8 +16,10 @@ const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
 const WORKFLOW_MAP = {
   'ltx-i2v': join(process.cwd(), 'video_ltx2_5_i2v.json'),
   'ltx-t2v': join(process.cwd(), 'video_ltx2_5_t2v.json'),
-  'ltx-fflf2v': join(process.cwd(), 'video_ltx2_5_flf2v.json'),
+  'ltx-flf2v': join(process.cwd(), 'video_ltx2_5_flf2v.json'),
 };
+
+const SUPPORTED_MODELS = Object.keys(WORKFLOW_MAP).join(',');
 
 // Aspect ratio & Resolution mappings for ResolutionSelector nodes
 const ASPECT_RATIO_MAP = {
@@ -38,7 +40,7 @@ const RESOLUTION_MEGAPIXELS = {
   '4k-hd': 8.3,
 };
 
-// Pixel dimensions for nodes that require explicit Width & Height (e.g. ltx-fflf2v)
+// Pixel dimensions for nodes that require explicit Width & Height (e.g. ltx-flf2v)
 const RESOLUTION_DIMENSIONS = {
   '16:9': {
     '720p': { width: 1280, height: 720 },
@@ -234,9 +236,9 @@ const handle_inactivity_shutdown = async () => {
 // ============================================
 // API Task Operations
 // ============================================
-const poll_for_job = async (job_type, model) => {
+const poll_for_job = async (job_type) => {
   try {
-    const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&model=${model}`;
+    const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&models=${encodeURIComponent(SUPPORTED_MODELS)}`;
     const response = await fetch(url, {
       method: 'GET',
       headers: get_api_headers(),
@@ -382,7 +384,7 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
       if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
       break;
 
-    case 'ltx-fflf2v': {
+    case 'ltx-flf2v': {
       // Prompt & Motion
       if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
       if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
@@ -627,9 +629,7 @@ const worker_loop = async () => {
   while (true) {
     try {
       const job_type = process.env.JOB_TYPE || 'generate';
-      const model = process.env.MODEL || 'ltx-i2v';
-
-      const result = await poll_for_job(job_type, model);
+      const result = await poll_for_job(job_type);
 
       if (!result || !result.success) {
         empty_poll_count++;
