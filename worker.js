@@ -216,7 +216,7 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
     duration_sec = 5,
     fps = 24,
     aspect_ratio = '16:9',
-    resolution = '1080p',
+    resolution = '720p',
   } = job_params;
 
   const aspect_label = ASPECT_RATIO_MAP[aspect_ratio] || '16:9 (Widescreen)';
@@ -468,7 +468,7 @@ const process_job = async (job_data) => {
   const duration_sec = parseInt(input.duration_sec || job_data.duration_sec, 10) || 5;
   const fps = parseInt(input.fps || job_data.fps, 10) || 24;
   const aspect_ratio = input.aspect_ratio || '16:9';
-  const resolution = input.resolution || '1080p';
+  const resolution = input.resolution || '720p';
 
   let retry_count = 0;
   console.log(`[Job ${job_id}] Processing (${model}) - Duration: ${duration_sec}s @ ${fps}fps - Res: ${resolution} (${aspect_ratio})`);
