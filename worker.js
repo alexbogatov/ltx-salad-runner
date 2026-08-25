@@ -11,8 +11,8 @@ const COMFY_PORT = 8188;
 const COMFY_HOST = `http://127.0.0.1:${COMFY_PORT}`;
 const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
 const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
+const STATS_FILE = '/tmp/worker_stats.json';
 
-// Workflow routing map
 const WORKFLOW_MAP = {
   'ltx-i2v': join(process.cwd(), 'video_ltx2_5_i2v.json'),
   'ltx-t2v': join(process.cwd(), 'video_ltx2_5_t2v.json'),
@@ -21,7 +21,6 @@ const WORKFLOW_MAP = {
 
 const SUPPORTED_MODELS = Object.keys(WORKFLOW_MAP).join(',');
 
-// Aspect ratio & Resolution mappings for ResolutionSelector nodes
 const ASPECT_RATIO_MAP = {
   '16:9': '16:9 (Widescreen)',
   '9:16': '9:16 (Portrait Widescreen)',
@@ -40,7 +39,6 @@ const RESOLUTION_MEGAPIXELS = {
   '4k-hd': 8.3,
 };
 
-// Pixel dimensions for nodes that require explicit Width & Height (e.g. ltx-flf2v)
 const RESOLUTION_DIMENSIONS = {
   '16:9': {
     '720p': { width: 1280, height: 720 },
@@ -68,41 +66,25 @@ const RESOLUTION_DIMENSIONS = {
   },
 };
 
-// Machine identity and static secret from environment
 const MACHINE_ID = os.hostname();
 const WORKER_API_SECRET = process.env.WORKER_API_SECRET;
 
-// Discovery cache: null = unprobed, false = not a hyperstack instance, string/number = VM ID
-let HYPERSTACK_VM_ID = null;
-
-// Track active background uploads to prevent shutdown race conditions
 const active_uploads = new Set();
+let JOBS_PROCESSED = 0;
+let TOTAL_GENERATION_TIME = 0;
 
-// API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
 const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 5;
 const INACTIVITY_TIMEOUT_SECONDS = parseInt(process.env.INACTIVITY_TIMEOUT_SECONDS, 10) || 180;
 const MAX_EMPTY_POLLS = Math.ceil(INACTIVITY_TIMEOUT_SECONDS / POLL_INTERVAL_SECONDS);
 const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
 
-// Hyperstack Configuration
-const HYPERSTACK_API_URL = process.env.HYPERSTACK_API_URL || 'https://infrahub-api.nexgencloud.com/v1';
-const HYPERSTACK_API_KEY = process.env.HYPERSTACK_API_KEY;
-
-// R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const R2_CDN_URL = process.env.R2_CDN_URL;
 
-if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
-  console.warn('[Config Warning] Missing one or more R2 credentials.');
-}
-
-// ============================================
-// R2 Client
-// ============================================
 const s3_client = new S3Client({
   region: 'auto',
   endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -112,21 +94,10 @@ const s3_client = new S3Client({
   },
 });
 
-// ============================================
-// Helper Functions
-// ============================================
 const sleep = (ms) => {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-};
-
-const is_modal_runtime = () => {
-  return Boolean(
-    process.env.MODAL_TASK_ID ||
-    process.env.MODAL_IS_REMOTE ||
-    process.env.MODAL_ENVIRONMENT
-  );
 };
 
 const get_api_headers = () => {
@@ -137,124 +108,28 @@ const get_api_headers = () => {
   };
 };
 
-const get_hyperstack_headers = () => {
-  return {
-    'api_key': HYPERSTACK_API_KEY,
-    'accept': 'application/json',
-    'content-type': 'application/json',
-  };
-};
-
 const get_random_seed = () => {
   return Math.floor(Math.random() * 1000000000000000);
 };
 
-// ============================================
-// Cloud Discovery & Teardown Handlers
-// ============================================
-const resolve_hyperstack_vm_id = async () => {
-  if (HYPERSTACK_VM_ID !== null) {
-    return HYPERSTACK_VM_ID;
-  }
-
-  if (is_modal_runtime() || !HYPERSTACK_API_KEY) {
-    HYPERSTACK_VM_ID = false;
-    return null;
-  }
-
+const write_session_stats = async () => {
   try {
-    console.log(`[Hyperstack] Checking if hostname '${MACHINE_ID}' exists in Hyperstack account...`);
-    const res = await fetch(`${HYPERSTACK_API_URL}/core/virtual-machines`, {
-      method: 'GET',
-      headers: get_hyperstack_headers(),
+    const payload = JSON.stringify({
+      jobs_processed: JOBS_PROCESSED,
+      total_generation_time_sec: Number(TOTAL_GENERATION_TIME.toFixed(2)),
     });
-
-    if (!res.ok) {
-      HYPERSTACK_VM_ID = false;
-      return null;
-    }
-
-    const data = await res.json();
-    const instances = data.instances || [];
-    const match = instances.find((vm) => {
-      return vm.name?.toLowerCase() === MACHINE_ID.toLowerCase();
-    });
-
-    if (!match) {
-      console.log(`[Platform Detection] Host '${MACHINE_ID}' not in Hyperstack inventory. Disabling Hyperstack hibernation.`);
-      HYPERSTACK_VM_ID = false;
-      return null;
-    }
-
-    HYPERSTACK_VM_ID = match.id;
-    console.log(`[Platform Detection] Hyperstack VM verified (ID: ${HYPERSTACK_VM_ID})`);
-    return HYPERSTACK_VM_ID;
-  } catch (err) {
-    console.warn('[Hyperstack Discovery Failed]:', err.message);
-    HYPERSTACK_VM_ID = false;
-    return null;
-  }
-};
-
-const hibernate_vm = async () => {
-  try {
-    const vm_id = await resolve_hyperstack_vm_id();
-    if (!vm_id) {
-      throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
-    }
-
-    console.log(`[Hibernate] Requesting hibernation for VM ${vm_id}...`);
-    const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: get_hyperstack_headers(),
-    });
-
-    if (!res.ok) {
-      const err_text = await res.text();
-      throw new Error(`HTTP ${res.status}: ${err_text}`);
-    }
-
-    const data = await res.json();
-    console.log('[Hibernate] VM hibernation successfully initiated:', data);
-    return data;
-  } catch (err) {
-    console.error('[Hibernate Error]:', err.message);
-    return null;
-  }
+    await writeFile(STATS_FILE, payload);
+  } catch (_) {}
 };
 
 const flush_pending_uploads = async () => {
   if (active_uploads.size > 0) {
-    console.log(`[Worker] Waiting for ${active_uploads.size} background upload(s) to complete before teardown...`);
+    console.log(`[Worker] Waiting for ${active_uploads.size} background upload(s) to complete...`);
     await Promise.allSettled(Array.from(active_uploads));
     console.log('[Worker] All background uploads resolved.');
   }
 };
 
-const handle_inactivity_shutdown = async () => {
-  console.log('[Worker] Inactivity limit reached. Initiating teardown...');
-  await flush_pending_uploads();
-
-  if (is_modal_runtime()) {
-    console.log('[Teardown: Modal] Serverless task finished. Exiting container.');
-    process.exit(0);
-  }
-
-  const vm_id = await resolve_hyperstack_vm_id();
-  if (vm_id) {
-    console.log(`[Teardown: Hyperstack] Hibernating Hyperstack VM ${vm_id}...`);
-    await hibernate_vm();
-    process.exit(0);
-  }
-
-  console.log('[Teardown: Generic] Exiting worker process.');
-  process.exit(0);
-};
-
-// ============================================
-// API Task Operations
-// ============================================
 const poll_for_job = async (job_type) => {
   try {
     const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&models=${encodeURIComponent(SUPPORTED_MODELS)}`;
@@ -318,9 +193,6 @@ const fail_job = async (job_id, error_message) => {
   return await response.json();
 };
 
-// ============================================
-// ComfyUI Engine & Targeted Workflow Mutation
-// ============================================
 const wait_for_comfy_ready = async () => {
   console.log('[ComfyUI] Probing server readiness on port 8188...');
   const health_url = `${COMFY_HOST}/history`;
@@ -510,9 +382,6 @@ const execute_workflow = async (workflow, job_id) => {
   }
 };
 
-// ============================================
-// Filesystem & S3 Operations
-// ============================================
 const find_latest_mp4 = async (dir) => {
   const files = [];
   const walk = async (current_dir) => {
@@ -566,9 +435,6 @@ const upload_to_r2 = async (file_path, job_id) => {
   return `${R2_CDN_URL}/${key}`;
 };
 
-// ============================================
-// Background Upload Task Runner
-// ============================================
 const upload_and_complete_async = async (job_id, isolated_path, downloaded_files, generation_time) => {
   try {
     console.log(`[Job ${job_id}] Uploading generated MP4 to Cloudflare R2...`);
@@ -593,9 +459,6 @@ const upload_and_complete_async = async (job_id, isolated_path, downloaded_files
   }
 };
 
-// ============================================
-// Job Orchestrator
-// ============================================
 const process_job = async (job_data) => {
   const job_id = job_data.job_id || job_data.id;
   const model = job_data.model || 'ltx-i2v';
@@ -622,7 +485,6 @@ const process_job = async (job_data) => {
     const downloaded_filenames = [];
 
     try {
-      // 1. Download input frames if present
       for (let i = 0; i < images.length; i++) {
         const ext = images[i].split('.').pop().split('?')[0] || 'jpg';
         const filename = `${job_id}_frame_${i}.${ext}`;
@@ -630,11 +492,9 @@ const process_job = async (job_data) => {
         downloaded_filenames.push(filename);
       }
 
-      // 2. Read base workflow
       const raw_workflow = readFileSync(workflow_file, 'utf-8');
       let workflow = JSON.parse(raw_workflow);
 
-      // 3. Mutate graph inputs via explicit node mapping
       workflow = mutate_workflow(
         workflow,
         { job_id, prompt, duration_sec, fps, aspect_ratio, resolution },
@@ -642,7 +502,6 @@ const process_job = async (job_data) => {
         downloaded_filenames
       );
 
-      // 4. Run diffusion generation
       const generation_time = await execute_workflow(workflow, job_id);
       const output_file = await find_latest_mp4(OUTPUT_DIR);
 
@@ -650,13 +509,15 @@ const process_job = async (job_data) => {
         throw new Error('Generation finished but MP4 output was not found.');
       }
 
-      // 5. Isolate MP4 file for safe non-blocking background upload
       const isolated_path = join(OUTPUT_DIR, `uploading_${job_id}.mp4`);
       await rename(output_file, isolated_path);
 
       console.log(`[Job ${job_id}] Finished generation in ${generation_time.toFixed(2)}s. Offloaded upload to background.`);
 
-      // 6. Fire and track background upload (Zero GPU blocking)
+      JOBS_PROCESSED++;
+      TOTAL_GENERATION_TIME += generation_time;
+      await write_session_stats();
+
       const upload_task = upload_and_complete_async(job_id, isolated_path, downloaded_filenames, generation_time);
       active_uploads.add(upload_task);
       upload_task.finally(() => {
@@ -687,26 +548,20 @@ const process_job = async (job_data) => {
   return false;
 };
 
-// ============================================
-// Main Execution Entrypoint
-// ============================================
 const worker_loop = async () => {
-  console.log(`[Worker] Started on host: ${MACHINE_ID}`);
+  console.log(`[Worker] Daemon active on host: ${MACHINE_ID}`);
 
   if (!WORKER_API_SECRET) {
     console.error('[Worker Fatal] WORKER_API_SECRET environment variable is missing.');
     process.exit(1);
   }
 
-  // 1. Prepare input/output directories
   await mkdir(INPUT_DIR, { recursive: true });
   await mkdir(OUTPUT_DIR, { recursive: true });
 
-  // 2. Wait for ComfyUI backend
   await wait_for_comfy_ready();
 
   let empty_poll_count = 0;
-
   console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s (Supported Models: ${SUPPORTED_MODELS})...`);
 
   while (true) {
@@ -719,7 +574,10 @@ const worker_loop = async () => {
         console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
         if (empty_poll_count >= MAX_EMPTY_POLLS) {
-          await handle_inactivity_shutdown();
+          console.log('[Worker] Inactivity limit reached. Exiting worker loop...');
+          await flush_pending_uploads();
+          await write_session_stats();
+          process.exit(0);
         }
 
         await sleep(POLL_INTERVAL_SECONDS * 1000);
@@ -743,6 +601,7 @@ const worker_loop = async () => {
 const handle_exit = async () => {
   console.log('[Worker] Termination signal received.');
   await flush_pending_uploads();
+  await write_session_stats();
   process.exit(0);
 };
 
