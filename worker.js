@@ -46,26 +46,26 @@ const RESOLUTION_DIMENSIONS = {
     '720p': { width: 1280, height: 720 },
     '1080p': { width: 1920, height: 1080 },
     '2k-hd': { width: 2560, height: 1440 },
-    '4k-hd': { width: 3840, height: 2160 }
+    '4k-hd': { width: 3840, height: 2160 },
   },
   '9:16': {
     '720p': { width: 720, height: 1280 },
     '1080p': { width: 1080, height: 1920 },
     '2k-hd': { width: 1440, height: 2560 },
-    '4k-hd': { width: 2160, height: 3840 }
+    '4k-hd': { width: 2160, height: 3840 },
   },
   '1:1': {
     '720p': { width: 1024, height: 1024 },
     '1080p': { width: 1440, height: 1440 },
     '2k-hd': { width: 1920, height: 1920 },
-    '4k-hd': { width: 2880, height: 2880 }
+    '4k-hd': { width: 2880, height: 2880 },
   },
   '4:3': {
     '720p': { width: 960, height: 720 },
     '1080p': { width: 1440, height: 1080 },
     '2k-hd': { width: 1920, height: 1440 },
-    '4k-hd': { width: 2880, height: 2160 }
-  }
+    '4k-hd': { width: 2880, height: 2160 },
+  },
 };
 
 // Machine identity and static secret from environment
@@ -115,7 +115,11 @@ const s3_client = new S3Client({
 // ============================================
 // Helper Functions
 // ============================================
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+};
 
 const is_modal_runtime = () => {
   return Boolean(
@@ -125,25 +129,33 @@ const is_modal_runtime = () => {
   );
 };
 
-const get_api_headers = () => ({
-  'worker-auth': WORKER_API_SECRET,
-  'x-machine-id': MACHINE_ID,
-  'content-type': 'application/json',
-});
+const get_api_headers = () => {
+  return {
+    'worker-auth': WORKER_API_SECRET,
+    'x-machine-id': MACHINE_ID,
+    'content-type': 'application/json',
+  };
+};
 
-const get_hyperstack_headers = () => ({
-  'api_key': HYPERSTACK_API_KEY,
-  'accept': 'application/json',
-  'content-type': 'application/json',
-});
+const get_hyperstack_headers = () => {
+  return {
+    'api_key': HYPERSTACK_API_KEY,
+    'accept': 'application/json',
+    'content-type': 'application/json',
+  };
+};
 
-const get_random_seed = () => Math.floor(Math.random() * 1000000000000000);
+const get_random_seed = () => {
+  return Math.floor(Math.random() * 1000000000000000);
+};
 
 // ============================================
 // Cloud Discovery & Teardown Handlers
 // ============================================
 const resolve_hyperstack_vm_id = async () => {
-  if (HYPERSTACK_VM_ID !== null) return HYPERSTACK_VM_ID;
+  if (HYPERSTACK_VM_ID !== null) {
+    return HYPERSTACK_VM_ID;
+  }
 
   if (is_modal_runtime() || !HYPERSTACK_API_KEY) {
     HYPERSTACK_VM_ID = false;
@@ -164,7 +176,9 @@ const resolve_hyperstack_vm_id = async () => {
 
     const data = await res.json();
     const instances = data.instances || [];
-    const match = instances.find((vm) => vm.name?.toLowerCase() === MACHINE_ID.toLowerCase());
+    const match = instances.find((vm) => {
+      return vm.name?.toLowerCase() === MACHINE_ID.toLowerCase();
+    });
 
     if (!match) {
       console.log(`[Platform Detection] Host '${MACHINE_ID}' not in Hyperstack inventory. Disabling Hyperstack hibernation.`);
@@ -185,7 +199,9 @@ const resolve_hyperstack_vm_id = async () => {
 const hibernate_vm = async () => {
   try {
     const vm_id = await resolve_hyperstack_vm_id();
-    if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
+    if (!vm_id) {
+      throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
+    }
 
     console.log(`[Hibernate] Requesting hibernation for VM ${vm_id}...`);
     const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
@@ -247,7 +263,9 @@ const poll_for_job = async (job_type) => {
       headers: get_api_headers(),
     });
 
-    if (response.status === 404) return null;
+    if (response.status === 404) {
+      return null;
+    }
 
     if (!response.ok) {
       const err_text = await response.text();
@@ -326,7 +344,7 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
     duration_sec = 5,
     fps = 24,
     aspect_ratio = '16:9',
-    resolution = '1080p'
+    resolution = '1080p',
   } = job_params;
 
   const aspect_label = ASPECT_RATIO_MAP[aspect_ratio] || '16:9 (Widescreen)';
@@ -334,91 +352,131 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
   const filename_prefix = `video/${model}_${job_id}`;
 
   switch (model) {
-    case 'ltx-i2v':
-      // Prompt & Motion (24 FPS default)
-      if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
-      if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
-      if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
+    case 'ltx-i2v': {
+      if (workflow['398:376']?.inputs) {
+        workflow['398:376'].inputs.value = prompt;
+      }
+      if (workflow['398:362']?.inputs) {
+        workflow['398:362'].inputs.value = duration_sec;
+      }
+      if (workflow['398:361']?.inputs) {
+        workflow['398:361'].inputs.value = fps;
+      }
 
-      // Neutralize Negative Prompt & Bypass Enhancer LLM
-      if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
-      if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
+      if (workflow['398:373']?.inputs) {
+        workflow['398:373'].inputs.text = '';
+      }
+      if (workflow['398:383']?.inputs) {
+        workflow['398:383'].inputs.value = false;
+      }
 
-      // Resolution & Aspect Ratio
       if (workflow['403']?.inputs) {
         workflow['403'].inputs.aspect_ratio = aspect_label;
         workflow['403'].inputs.megapixels = mp_val;
       }
 
-      // Input Image
       if (workflow['395']?.inputs && downloaded_filenames[0]) {
         workflow['395'].inputs.image = downloaded_filenames[0];
       }
 
-      // Seeds
-      if (workflow['398:339']?.inputs) workflow['398:339'].inputs.noise_seed = get_random_seed();
-      if (workflow['398:338']?.inputs) workflow['398:338'].inputs.noise_seed = get_random_seed();
+      if (workflow['398:339']?.inputs) {
+        workflow['398:339'].inputs.noise_seed = get_random_seed();
+      }
+      if (workflow['398:338']?.inputs) {
+        workflow['398:338'].inputs.noise_seed = get_random_seed();
+      }
 
-      // Save Node
-      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
+      if (workflow['75']?.inputs) {
+        workflow['75'].inputs.filename_prefix = filename_prefix;
+      }
       break;
+    }
 
-    case 'ltx-t2v':
-      // Prompt & Motion (24 FPS default)
-      if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
-      if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
-      if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
+    case 'ltx-t2v': {
+      if (workflow['405:376']?.inputs) {
+        workflow['405:376'].inputs.value = prompt;
+      }
+      if (workflow['405:362']?.inputs) {
+        workflow['405:362'].inputs.value = duration_sec;
+      }
+      if (workflow['405:361']?.inputs) {
+        workflow['405:361'].inputs.value = fps;
+      }
 
-      // Neutralize Negative Prompt & Bypass Enhancer LLM
-      if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
-      if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
+      if (workflow['405:373']?.inputs) {
+        workflow['405:373'].inputs.text = '';
+      }
+      if (workflow['405:383']?.inputs) {
+        workflow['405:383'].inputs.value = false;
+      }
 
-      // Resolution & Aspect Ratio
       if (workflow['409']?.inputs) {
         workflow['409'].inputs.aspect_ratio = aspect_label;
         workflow['409'].inputs.megapixels = mp_val;
       }
 
-      // Seeds
-      if (workflow['405:339']?.inputs) workflow['405:339'].inputs.noise_seed = get_random_seed();
-      if (workflow['405:338']?.inputs) workflow['405:338'].inputs.noise_seed = get_random_seed();
+      if (workflow['405:339']?.inputs) {
+        workflow['405:339'].inputs.noise_seed = get_random_seed();
+      }
+      if (workflow['405:338']?.inputs) {
+        workflow['405:338'].inputs.noise_seed = get_random_seed();
+      }
 
-      // Save Node
-      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
+      if (workflow['75']?.inputs) {
+        workflow['75'].inputs.filename_prefix = filename_prefix;
+      }
       break;
+    }
 
     case 'ltx-flf2v': {
-      // Prompt & Motion (24 FPS default)
-      if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
-      if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
-      if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
+      if (workflow['251:252']?.inputs) {
+        workflow['251:252'].inputs.value = prompt;
+      }
+      if (workflow['251:198']?.inputs) {
+        workflow['251:198'].inputs.value = duration_sec;
+      }
+      if (workflow['251:205']?.inputs) {
+        workflow['251:205'].inputs.value = fps;
+      }
 
-      // Neutralize Negative Prompt & Bypass Enhancer LLM
-      if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
-      if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
+      if (workflow['251:217']?.inputs) {
+        workflow['251:217'].inputs.text = '';
+      }
+      if (workflow['251:250']?.inputs) {
+        workflow['251:250'].inputs.value = false;
+      }
 
-      // Pixel Dimensions
       const dims = (RESOLUTION_DIMENSIONS[aspect_ratio] && RESOLUTION_DIMENSIONS[aspect_ratio][resolution])
         ? RESOLUTION_DIMENSIONS[aspect_ratio][resolution]
         : { width: 1920, height: 1080 };
 
-      if (workflow['251:215']?.inputs) workflow['251:215'].inputs.value = dims.width;
-      if (workflow['251:216']?.inputs) workflow['251:216'].inputs.value = dims.height;
+      if (workflow['251:215']?.inputs) {
+        workflow['251:215'].inputs.value = dims.width;
+      }
+      if (workflow['251:216']?.inputs) {
+        workflow['251:216'].inputs.value = dims.height;
+      }
 
-      // First and Last Frames
-      if (workflow['31']?.inputs && downloaded_filenames[0]) workflow['31'].inputs.image = downloaded_filenames[0];
-      if (workflow['39']?.inputs && downloaded_filenames[1]) workflow['39'].inputs.image = downloaded_filenames[1];
+      if (workflow['31']?.inputs && downloaded_filenames[0]) {
+        workflow['31'].inputs.image = downloaded_filenames[0];
+      }
+      if (workflow['39']?.inputs && downloaded_filenames[1]) {
+        workflow['39'].inputs.image = downloaded_filenames[1];
+      }
 
-      // Seeds
-      if (workflow['251:196']?.inputs) workflow['251:196'].inputs.noise_seed = get_random_seed();
+      if (workflow['251:196']?.inputs) {
+        workflow['251:196'].inputs.noise_seed = get_random_seed();
+      }
 
-      // Save Node
-      if (workflow['68']?.inputs) workflow['68'].inputs.filename_prefix = filename_prefix;
+      if (workflow['68']?.inputs) {
+        workflow['68'].inputs.filename_prefix = filename_prefix;
+      }
       break;
     }
 
-    default:
+    default: {
       throw new Error(`Unsupported model identifier in mutation: ${model}`);
+    }
   }
 
   return workflow;
@@ -473,14 +531,20 @@ const find_latest_mp4 = async (dir) => {
   };
 
   await walk(dir);
-  if (files.length === 0) return null;
-  files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+  if (files.length === 0) {
+    return null;
+  }
+  files.sort((a, b) => {
+    return b.mtime.getTime() - a.mtime.getTime();
+  });
   return files[0].path;
 };
 
 const download_image = async (url, filename) => {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Image download failed: ${res.statusText}`);
+  if (!res.ok) {
+    throw new Error(`Image download failed: ${res.statusText}`);
+  }
   const buffer = await res.arrayBuffer();
   await mkdir(INPUT_DIR, { recursive: true });
   const image_path = join(INPUT_DIR, filename);
@@ -514,11 +578,17 @@ const upload_and_complete_async = async (job_id, isolated_path, downloaded_files
     console.log(`[Job ${job_id}] Finalized successfully.`);
   } catch (err) {
     console.error(`[Job ${job_id}] Background upload/complete failed:`, err.message);
-    try { await fail_job(job_id, err.message); } catch (_) {}
+    try {
+      await fail_job(job_id, err.message);
+    } catch (_) {}
   } finally {
-    try { await unlink(isolated_path); } catch (_) {}
+    try {
+      await unlink(isolated_path);
+    } catch (_) {}
     for (const filename of downloaded_files) {
-      try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
+      try {
+        await unlink(join(INPUT_DIR, filename));
+      } catch (_) {}
     }
   }
 };
@@ -576,7 +646,9 @@ const process_job = async (job_data) => {
       const generation_time = await execute_workflow(workflow, job_id);
       const output_file = await find_latest_mp4(OUTPUT_DIR);
 
-      if (!output_file) throw new Error('Generation finished but MP4 output was not found.');
+      if (!output_file) {
+        throw new Error('Generation finished but MP4 output was not found.');
+      }
 
       // 5. Isolate MP4 file for safe non-blocking background upload
       const isolated_path = join(OUTPUT_DIR, `uploading_${job_id}.mp4`);
@@ -587,7 +659,9 @@ const process_job = async (job_data) => {
       // 6. Fire and track background upload (Zero GPU blocking)
       const upload_task = upload_and_complete_async(job_id, isolated_path, downloaded_filenames, generation_time);
       active_uploads.add(upload_task);
-      upload_task.finally(() => active_uploads.delete(upload_task));
+      upload_task.finally(() => {
+        active_uploads.delete(upload_task);
+      });
 
       return true;
     } catch (err) {
@@ -595,11 +669,15 @@ const process_job = async (job_data) => {
       console.error(`[Job ${job_id}] Attempt ${retry_count} failed: ${err.message}`);
 
       for (const filename of downloaded_filenames) {
-        try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
+        try {
+          await unlink(join(INPUT_DIR, filename));
+        } catch (_) {}
       }
 
       if (retry_count >= MAX_RETRY_COUNT) {
-        try { await fail_job(job_id, err.message); } catch (_) {}
+        try {
+          await fail_job(job_id, err.message);
+        } catch (_) {}
         return false;
       }
 
