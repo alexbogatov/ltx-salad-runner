@@ -335,16 +335,13 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
 
   switch (model) {
     case 'ltx-i2v':
-      // Prompt & Motion
+      // Prompt & Motion (24 FPS default)
       if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
       if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
       if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
 
-      // Completely remove Negative Prompt node and decouple conditioning link
-      if (workflow['398:365']?.inputs?.negative) delete workflow['398:365'].inputs.negative;
-      delete workflow['398:373'];
-
-      // Disable Prompt Enhancer
+      // Neutralize Negative Prompt & Bypass Enhancer LLM
+      if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
       if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
 
       // Resolution & Aspect Ratio
@@ -367,16 +364,13 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
       break;
 
     case 'ltx-t2v':
-      // Prompt & Motion
+      // Prompt & Motion (24 FPS default)
       if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
       if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
       if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
 
-      // Completely remove Negative Prompt node and decouple conditioning link
-      if (workflow['405:365']?.inputs?.negative) delete workflow['405:365'].inputs.negative;
-      delete workflow['405:373'];
-
-      // Disable Prompt Enhancer
+      // Neutralize Negative Prompt & Bypass Enhancer LLM
+      if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
       if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
 
       // Resolution & Aspect Ratio
@@ -394,16 +388,13 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
       break;
 
     case 'ltx-flf2v': {
-      // Prompt & Motion
+      // Prompt & Motion (24 FPS default)
       if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
       if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
       if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
 
-      // Completely remove Negative Prompt node and decouple conditioning link
-      if (workflow['251:195']?.inputs?.negative) delete workflow['251:195'].inputs.negative;
-      delete workflow['251:217'];
-
-      // Disable Prompt Enhancer
+      // Neutralize Negative Prompt & Bypass Enhancer LLM
+      if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
       if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
 
       // Pixel Dimensions
@@ -542,12 +533,12 @@ const process_job = async (job_data) => {
   const prompt = input.prompt || job_data.prompt || '';
   const images = input.images || (job_data.image_url ? [job_data.image_url] : []);
   const duration_sec = parseInt(input.duration_sec || job_data.duration_sec, 10) || 5;
-  const fps = parseInt(input.fps, 10) || 24;
+  const fps = parseInt(input.fps || job_data.fps, 10) || 24;
   const aspect_ratio = input.aspect_ratio || '16:9';
   const resolution = input.resolution || '1080p';
 
   let retry_count = 0;
-  console.log(`[Job ${job_id}] Processing (${model}) - Duration: ${duration_sec}s - Res: ${resolution} (${aspect_ratio})`);
+  console.log(`[Job ${job_id}] Processing (${model}) - Duration: ${duration_sec}s @ ${fps}fps - Res: ${resolution} (${aspect_ratio})`);
 
   const workflow_file = WORKFLOW_MAP[model];
   if (!workflow_file) {
