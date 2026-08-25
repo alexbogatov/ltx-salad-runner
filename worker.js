@@ -80,7 +80,9 @@ const active_uploads = new Set();
 
 // API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
-const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 1;
+const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 5;
+const INACTIVITY_TIMEOUT_SECONDS = parseInt(process.env.INACTIVITY_TIMEOUT_SECONDS, 10) || 180;
+const MAX_EMPTY_POLLS = Math.ceil(INACTIVITY_TIMEOUT_SECONDS / POLL_INTERVAL_SECONDS);
 const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
 
 // Hyperstack Configuration
@@ -131,6 +133,7 @@ const get_api_headers = () => ({
 
 const get_hyperstack_headers = () => ({
   'api_key': HYPERSTACK_API_KEY,
+  'accept': 'application/json',
   'content-type': 'application/json',
 });
 
@@ -337,8 +340,11 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
       if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
       if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
 
-      // Clear Negative Prompt & Disable Prompt Enhancer
-      if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
+      // Completely remove Negative Prompt node and decouple conditioning link
+      if (workflow['398:365']?.inputs?.negative) delete workflow['398:365'].inputs.negative;
+      delete workflow['398:373'];
+
+      // Disable Prompt Enhancer
       if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
 
       // Resolution & Aspect Ratio
@@ -366,8 +372,11 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
       if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
       if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
 
-      // Clear Negative Prompt & Disable Prompt Enhancer
-      if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
+      // Completely remove Negative Prompt node and decouple conditioning link
+      if (workflow['405:365']?.inputs?.negative) delete workflow['405:365'].inputs.negative;
+      delete workflow['405:373'];
+
+      // Disable Prompt Enhancer
       if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
 
       // Resolution & Aspect Ratio
@@ -390,8 +399,11 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
       if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
       if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
 
-      // Clear Negative Prompt & Disable Prompt Enhancer
-      if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
+      // Completely remove Negative Prompt node and decouple conditioning link
+      if (workflow['251:195']?.inputs?.negative) delete workflow['251:195'].inputs.negative;
+      delete workflow['251:217'];
+
+      // Disable Prompt Enhancer
       if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
 
       // Pixel Dimensions
@@ -504,9 +516,11 @@ const upload_to_r2 = async (file_path, job_id) => {
 // ============================================
 const upload_and_complete_async = async (job_id, isolated_path, downloaded_files, generation_time) => {
   try {
+    console.log(`[Job ${job_id}] Uploading generated MP4 to Cloudflare R2...`);
     const r2_url = await upload_to_r2(isolated_path, job_id);
+    console.log(`[Job ${job_id}] R2 upload complete: ${r2_url}. Notifying API...`);
     await complete_job(job_id, r2_url, generation_time);
-    console.log(`[Job ${job_id}] Upload & complete finalized successfully in background.`);
+    console.log(`[Job ${job_id}] Finalized successfully.`);
   } catch (err) {
     console.error(`[Job ${job_id}] Background upload/complete failed:`, err.message);
     try { await fail_job(job_id, err.message); } catch (_) {}
@@ -522,7 +536,8 @@ const upload_and_complete_async = async (job_id, isolated_path, downloaded_files
 // Job Orchestrator
 // ============================================
 const process_job = async (job_data) => {
-  const { id: job_id, model = 'ltx-i2v' } = job_data;
+  const job_id = job_data.job_id || job_data.id;
+  const model = job_data.model || 'ltx-i2v';
   const input = job_data.input || {};
   const prompt = input.prompt || job_data.prompt || '';
   const images = input.images || (job_data.image_url ? [job_data.image_url] : []);
@@ -622,16 +637,15 @@ const worker_loop = async () => {
   await wait_for_comfy_ready();
 
   let empty_poll_count = 0;
-  const MAX_EMPTY_POLLS = 3;
 
-  console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s...`);
+  console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s (Supported Models: ${SUPPORTED_MODELS})...`);
 
   while (true) {
     try {
       const job_type = process.env.JOB_TYPE || 'generate';
       const result = await poll_for_job(job_type);
 
-      if (!result || !result.success) {
+      if (!result || !result.success || !result.data) {
         empty_poll_count++;
         console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
@@ -642,6 +656,9 @@ const worker_loop = async () => {
         await sleep(POLL_INTERVAL_SECONDS * 1000);
         continue;
       }
+
+      const active_id = result.data.job_id || result.data.id;
+      console.log(`[Worker] Claimed Job ID: ${active_id} (Model: ${result.data.model})`);
 
       empty_poll_count = 0;
       await process_job(result.data);
