@@ -2,28 +2,17 @@ name: Build and Push Container Image
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "alt" ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Free Disk Space on GitHub Runner
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -61,3 +50,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           secrets: |
             HF_TOKEN=${{ secrets.HF_TOKEN }}
+
+      - name: Clean up Docker builder cache
+        if: always()
+        run: docker builder prune -f
