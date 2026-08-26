@@ -193,60 +193,96 @@ const mutate_workflow = (workflow, job_params, model, downloaded_filenames = [])
   const mp_val = RESOLUTION_MEGAPIXELS[resolution] || 2.1;
   const filename_prefix = `video/${model}_${job_id}`;
 
-  switch (model) {
-    case 'ltx-i2v': {
-      if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
-      if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
-      if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
-      if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
-      if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
-      // if (workflow['403']?.inputs) {
-      //   workflow['403'].inputs.aspect_ratio = aspect_label;
-      //   workflow['403'].inputs.megapixels = mp_val;
-      // }
-      if (workflow['395']?.inputs && downloaded_filenames[0]) workflow['395'].inputs.image = downloaded_filenames[0];
-      if (workflow['398:339']?.inputs) workflow['398:339'].inputs.noise_seed = get_random_seed();
-      if (workflow['398:338']?.inputs) workflow['398:338'].inputs.noise_seed = get_random_seed();
-      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
-      break;
+  for (const [node_id, node] of Object.entries(workflow)) {
+    if (node.class_type === 'PrimitiveInt' && (node._meta?.title === 'Duration' || node._meta?.title?.toLowerCase().includes('duration'))) {
+      node.inputs.value = duration_sec;
     }
-    case 'ltx-t2v': {
-      if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
-      if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
-      if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
-      if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
-      if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
-      if (workflow['409']?.inputs) {
-        workflow['409'].inputs.aspect_ratio = aspect_label;
-        workflow['409'].inputs.megapixels = mp_val;
-      }
-      if (workflow['405:339']?.inputs) workflow['405:339'].inputs.noise_seed = get_random_seed();
-      if (workflow['405:338']?.inputs) workflow['405:338'].inputs.noise_seed = get_random_seed();
-      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
-      break;
+    if (node.class_type === 'PrimitiveInt' && (node._meta?.title?.toLowerCase().includes('frame rate') || node._meta?.title?.toLowerCase().includes('fps'))) {
+      node.inputs.value = fps;
     }
-    case 'ltx-flf2v': {
-      if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
-      if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
-      if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
-      if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
-      if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
-
-      const dims = (RESOLUTION_DIMENSIONS[aspect_ratio] && RESOLUTION_DIMENSIONS[aspect_ratio][resolution])
-        ? RESOLUTION_DIMENSIONS[aspect_ratio][resolution]
-        : { width: 1920, height: 1080 };
-
-      if (workflow['251:215']?.inputs) workflow['251:215'].inputs.value = dims.width;
-      if (workflow['251:216']?.inputs) workflow['251:216'].inputs.value = dims.height;
-      if (workflow['31']?.inputs && downloaded_filenames[0]) workflow['31'].inputs.image = downloaded_filenames[0];
-      if (workflow['39']?.inputs && downloaded_filenames[1]) workflow['39'].inputs.image = downloaded_filenames[1];
-      if (workflow['251:196']?.inputs) workflow['251:196'].inputs.noise_seed = get_random_seed();
-      if (workflow['68']?.inputs) workflow['68'].inputs.filename_prefix = filename_prefix;
-      break;
+    if (node.class_type === 'RandomNoise') {
+      node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
     }
-    default:
-      throw new Error(`Unsupported model identifier in mutation: ${model}`);
   }
+
+  for (const [node_id, node] of Object.entries(workflow)) {
+    if (node.class_type === 'ResolutionSelector') {
+      node.inputs.aspect_ratio = aspect_label;
+      node.inputs.megapixels = mp_val;
+    }
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.toLowerCase() === 'width') {
+      node.inputs.value = resolution === '720p' ? 1280 : resolution === '2k-hd' ? 2560 : resolution === '4k-hd' ? 3840 : 1920;
+    }
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.toLowerCase() === 'height') {
+      node.inputs.value = resolution === '720p' ? 720 : resolution === '2k-hd' ? 1440 : resolution === '4k-hd' ? 2160 : 1080;
+    }
+  }
+
+  for (const [node_id, node] of Object.entries(workflow)) {
+    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+      node.inputs.value = prompt_text;
+    }
+    if (node.class_type === 'CLIPTextEncode' && !node._meta?.title?.toLowerCase().includes('negative')) {
+      if (typeof node.inputs.text === 'string') {
+        node.inputs.text = prompt_text;
+      }
+    }
+  }
+
+  // switch (model) {
+  //   case 'ltx-i2v': {
+  //     if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
+  //     if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
+  //     if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
+  //     if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
+  //     if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
+  //     // if (workflow['403']?.inputs) {
+  //     //   workflow['403'].inputs.aspect_ratio = aspect_label;
+  //     //   workflow['403'].inputs.megapixels = mp_val;
+  //     // }
+  //     if (workflow['395']?.inputs && downloaded_filenames[0]) workflow['395'].inputs.image = downloaded_filenames[0];
+  //     if (workflow['398:339']?.inputs) workflow['398:339'].inputs.noise_seed = get_random_seed();
+  //     if (workflow['398:338']?.inputs) workflow['398:338'].inputs.noise_seed = get_random_seed();
+  //     if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
+  //     break;
+  //   }
+  //   case 'ltx-t2v': {
+  //     if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
+  //     if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
+  //     if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
+  //     if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
+  //     if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
+  //     if (workflow['409']?.inputs) {
+  //       workflow['409'].inputs.aspect_ratio = aspect_label;
+  //       workflow['409'].inputs.megapixels = mp_val;
+  //     }
+  //     if (workflow['405:339']?.inputs) workflow['405:339'].inputs.noise_seed = get_random_seed();
+  //     if (workflow['405:338']?.inputs) workflow['405:338'].inputs.noise_seed = get_random_seed();
+  //     if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
+  //     break;
+  //   }
+  //   case 'ltx-flf2v': {
+  //     if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
+  //     if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
+  //     if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
+  //     if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
+  //     if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
+
+  //     const dims = (RESOLUTION_DIMENSIONS[aspect_ratio] && RESOLUTION_DIMENSIONS[aspect_ratio][resolution])
+  //       ? RESOLUTION_DIMENSIONS[aspect_ratio][resolution]
+  //       : { width: 1920, height: 1080 };
+
+  //     if (workflow['251:215']?.inputs) workflow['251:215'].inputs.value = dims.width;
+  //     if (workflow['251:216']?.inputs) workflow['251:216'].inputs.value = dims.height;
+  //     if (workflow['31']?.inputs && downloaded_filenames[0]) workflow['31'].inputs.image = downloaded_filenames[0];
+  //     if (workflow['39']?.inputs && downloaded_filenames[1]) workflow['39'].inputs.image = downloaded_filenames[1];
+  //     if (workflow['251:196']?.inputs) workflow['251:196'].inputs.noise_seed = get_random_seed();
+  //     if (workflow['68']?.inputs) workflow['68'].inputs.filename_prefix = filename_prefix;
+  //     break;
+  //   }
+  //   default:
+  //     throw new Error(`Unsupported model identifier in mutation: ${model}`);
+  // }
   return workflow;
 };
 
