@@ -34,6 +34,7 @@ let total_generation_time_sec = 0;
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
 const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 1;
 const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
+const MAX_EMPTY_POLLS = 3;
 
 // Hyperstack Configuration
 const HYPERSTACK_API_URL = process.env.HYPERSTACK_API_URL || 'https://infrahub-api.nexgencloud.com/v1';
@@ -516,9 +517,9 @@ const worker_loop = async () => {
       // 2. Inactivity tracking
       if (!current_job) {
         empty_poll_count++;
-        console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_RETRY_COUNT})`);
+        console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
-        if (empty_poll_count >= MAX_RETRY_COUNT) {
+        if (empty_poll_count >= MAX_EMPTY_POLLS) {
           await handle_inactivity_shutdown();
         }
 
