@@ -1,3 +1,5 @@
+//  worker.js
+
 import os from 'os';
 import { readFileSync, createReadStream } from 'fs';
 import { mkdir, writeFile, readdir, stat, unlink, rename } from 'fs/promises';
@@ -181,7 +183,7 @@ const handle_inactivity_shutdown = async () => {
 // ============================================
 const poll_for_job = async (job_type, model) => {
   try {
-    const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&models=${model}`;
+    const url = `${API_BASE_URL}/v1/worker/get?job_type=${encodeURIComponent(job_type)}&models=${encodeURIComponent(model)}`;
     const response = await fetch(url, {
       method: 'GET',
       headers: get_api_headers()
@@ -228,7 +230,7 @@ const fail_job = async (job_id, error_message) => {
     headers: get_api_headers(),
     body: JSON.stringify({
       job_id,
-      error_message
+      error_message: typeof error_message === 'string' ? error_message : (error_message?.message || 'Worker failure')
     })
   });
 
@@ -255,7 +257,7 @@ const wait_for_comfy_ready = async () => {
         break;
       }
     } catch (_) {}
-    await sleep(500);
+    await sleep(250);
   }
 };
 
@@ -308,7 +310,7 @@ const execute_workflow = async (workflow, job_id) => {
   const start_time = Date.now();
 
   while (true) {
-    await sleep(1000);
+    await sleep(250);
     const history_res = await fetch(`${COMFY_HOST}/history/${prompt_id}`);
 
     if (history_res.ok) {
@@ -392,10 +394,28 @@ const upload_and_complete_async = async (job_id, isolated_path, generation_time)
 // Job Orchestrator
 // ============================================
 const process_job = async (job_data) => {
-  const { job_id, image_url, duration_sec, prompt, job_type, model } = job_data;
+  const { job_id, job_type, model, input } = job_data;
+  
+  // Extract parameters from the nested input object (aligned with worker-controller.js)
+  const duration_sec = input?.duration_sec ?? job_data.duration_sec ?? 5;
+  const fps = input?.fps ?? job_data.fps ?? 24;
+  const prompt = input?.prompt ?? job_data.prompt ?? '';
+  const image_url = (Array.isArray(input?.images) && input.images.length > 0)
+    ? input.images[0]
+    : (input?.image_url ?? job_data.image_url);
+
   let retry_count = 0;
 
   console.log(`[Job ${job_id}] Processing (${job_type}/${model}) - Duration: ${duration_sec}s`);
+
+  if (!image_url) {
+    const error_msg = 'No valid image URL found in job payload';
+    console.error(`[Job ${job_id}] ${error_msg}`);
+    try {
+      await fail_job(job_id, error_msg);
+    } catch (_) {}
+    return false;
+  }
 
   while (retry_count < MAX_RETRY_COUNT) {
     try {
@@ -405,14 +425,16 @@ const process_job = async (job_data) => {
       const raw_workflow = readFileSync(WORKFLOW_PATH, 'utf-8');
       let workflow = JSON.parse(raw_workflow);
 
-      workflow = update_workflow_duration(workflow, duration_sec);
+      workflow = update_workflow_duration(workflow, duration_sec, fps);
       workflow = set_workflow_image(workflow, image_filename);
       workflow = set_workflow_prompt(workflow, prompt);
 
       const generation_time = await execute_workflow(workflow, job_id);
       const output_file = await find_latest_mp4(OUTPUT_DIR);
 
-      if (!output_file) throw new Error('Generation finished but MP4 was not found.');
+      if (!output_file) {
+        throw new Error('Generation finished but MP4 was not found.');
+      }
 
       // 1. Immediately rename and isolate file so next job cannot touch it
       const isolated_path = join(OUTPUT_DIR, `uploading_${job_id}.mp4`);
@@ -423,7 +445,9 @@ const process_job = async (job_data) => {
       // 2. Fire and track background upload (Zero GPU blocking)
       const upload_task = upload_and_complete_async(job_id, isolated_path, generation_time);
       active_uploads.add(upload_task);
-      upload_task.finally(() => active_uploads.delete(upload_task));
+      upload_task.finally(() => {
+        active_uploads.delete(upload_task);
+      });
 
       // 3. Immediately return true so loop starts next video
       return true;
@@ -432,8 +456,12 @@ const process_job = async (job_data) => {
       console.error(`[Job ${job_id}] Attempt ${retry_count} failed: ${err.message}`);
 
       if (retry_count >= MAX_RETRY_COUNT) {
-        try { await fail_job(job_id, err.message); } catch (_) {}
-        try { await unlink(join(INPUT_DIR, `${job_id}.jpg`)); } catch (_) {}
+        try {
+          await fail_job(job_id, err.message);
+        } catch (_) {}
+        try {
+          await unlink(join(INPUT_DIR, `${job_id}.jpg`));
+        } catch (_) {}
         return false;
       }
 
