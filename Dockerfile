@@ -70,7 +70,7 @@ RUN if [ -f /app/package.json ]; then npm install --omit=dev; fi
 
 # 7. Copy all runner orchestration files
 COPY . /app/
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/dl.sh
 
 EXPOSE 8188 8888
 
