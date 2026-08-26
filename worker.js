@@ -1,6 +1,6 @@
 // worker.js
 
-import os from 'os';
+import os from 'os'; 
 import { readFileSync, createReadStream } from 'fs';
 import { mkdir, writeFile, readdir, stat, unlink, rename } from 'fs/promises';
 import { join } from 'path';
