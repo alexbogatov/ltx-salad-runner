@@ -1,4 +1,6 @@
-import os from 'os'; 
+// worker.js
+
+import os from 'os';
 import { readFileSync, createReadStream } from 'fs';
 import { mkdir, writeFile, readdir, stat, unlink, rename } from 'fs/promises';
 import { join } from 'path';
@@ -9,82 +11,53 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 // ============================================
 const COMFY_PORT = 8188;
 const COMFY_HOST = `http://127.0.0.1:${COMFY_PORT}`;
-const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
-const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
-const STATS_FILE = '/tmp/worker_stats.json';
-
 const WORKFLOW_MAP = {
   'ltx-i2v': join(process.cwd(), 'video_ltx2_5_i2v.json'),
   'ltx-t2v': join(process.cwd(), 'video_ltx2_5_t2v.json'),
   'ltx-flf2v': join(process.cwd(), 'video_ltx2_5_flf2v.json'),
 };
+const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
+const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
+const STATS_FILE = '/tmp/worker_stats.json';
 
-const SUPPORTED_MODELS = Object.keys(WORKFLOW_MAP).join(',');
-
-const ASPECT_RATIO_MAP = {
-  '16:9': '16:9 (Widescreen)',
-  '9:16': '9:16 (Portrait Widescreen)',
-  '1:1': '1:1 (Square)',
-  '4:3': '4:3 (Standard)',
-  '3:4': '3:4 (Portrait Standard)',
-  '3:2': '3:2 (Photo)',
-  '2:3': '2:3 (Portrait Photo)',
-  '21:9': '21:9 (Ultrawide)',
-};
-
-const RESOLUTION_MEGAPIXELS = {
-  '720p': 0.9,
-  '1080p': 2.1,
-  '2k-hd': 3.7,
-  '4k-hd': 8.3,
-};
-
-const RESOLUTION_DIMENSIONS = {
-  '16:9': {
-    '720p': { width: 1280, height: 720 },
-    '1080p': { width: 1920, height: 1080 },
-    '2k-hd': { width: 2560, height: 1440 },
-    '4k-hd': { width: 3840, height: 2160 },
-  },
-  '9:16': {
-    '720p': { width: 720, height: 1280 },
-    '1080p': { width: 1080, height: 1920 },
-    '2k-hd': { width: 1440, height: 2560 },
-    '4k-hd': { width: 2160, height: 3840 },
-  },
-  '1:1': {
-    '720p': { width: 1024, height: 1024 },
-    '1080p': { width: 1440, height: 1440 },
-    '2k-hd': { width: 1920, height: 1920 },
-    '4k-hd': { width: 2880, height: 2880 },
-  },
-  '4:3': {
-    '720p': { width: 960, height: 720 },
-    '1080p': { width: 1440, height: 1080 },
-    '2k-hd': { width: 1920, height: 1440 },
-    '4k-hd': { width: 2880, height: 2160 },
-  },
-};
-
+// Machine identity and static secret from environment
 const MACHINE_ID = os.hostname();
 const WORKER_API_SECRET = process.env.WORKER_API_SECRET;
 
+// Discovery cache: null = unprobed, false = not a hyperstack instance, string/number = VM ID
+let HYPERSTACK_VM_ID = null;
+
+// Track background upload tasks
 const active_uploads = new Set();
-let JOBS_PROCESSED = 0;
-let TOTAL_GENERATION_TIME = 0;
 
+// Telemetry counters
+let total_jobs_processed = 0;
+let total_generation_time_sec = 0;
+
+// API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
-const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 5;
-const INACTIVITY_TIMEOUT_SECONDS = parseInt(process.env.INACTIVITY_TIMEOUT_SECONDS, 10) || 180;
-const MAX_EMPTY_POLLS = Math.ceil(INACTIVITY_TIMEOUT_SECONDS / POLL_INTERVAL_SECONDS);
+const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 1;
 const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
+const MAX_EMPTY_POLLS = 3;
 
+// Hyperstack Configuration
+const HYPERSTACK_API_URL = process.env.HYPERSTACK_API_URL || 'https://infrahub-api.nexgencloud.com/v1';
+const HYPERSTACK_API_KEY = process.env.HYPERSTACK_API_KEY;
+
+// R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const R2_CDN_URL = process.env.R2_CDN_URL;
 
+if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
+  console.warn('[Config Warning] Missing one or more R2 credentials.');
+}
+
+// ============================================
+// R2 Client
+// ============================================
 const s3_client = new S3Client({
   region: 'auto',
   endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -94,44 +67,150 @@ const s3_client = new S3Client({
   },
 });
 
+// ============================================
+// Helper Functions
+// ============================================
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const is_modal_runtime = () => {
+  return Boolean(
+    process.env.MODAL_TASK_ID ||
+    process.env.MODAL_IS_REMOTE ||
+    process.env.MODAL_ENVIRONMENT
+  );
+};
 
 const get_api_headers = () => ({
   'worker-auth': WORKER_API_SECRET,
   'x-machine-id': MACHINE_ID,
-  'content-type': 'application/json',
+  'content-type': 'application/json'
 });
 
-const get_random_seed = () => Math.floor(Math.random() * 1000000000000000);
+const get_hyperstack_headers = () => ({
+  'api_key': HYPERSTACK_API_KEY,
+  'content-type': 'application/json'
+});
 
-const write_session_stats = async () => {
+const sync_stats_file = async () => {
   try {
-    const payload = JSON.stringify({
-      jobs_processed: JOBS_PROCESSED,
-      total_generation_time_sec: Number(TOTAL_GENERATION_TIME.toFixed(2)),
-    });
-    await writeFile(STATS_FILE, payload);
+    const stats = {
+      jobs_processed: total_jobs_processed,
+      total_generation_time_sec: Math.round(total_generation_time_sec * 100) / 100,
+    };
+    await writeFile(STATS_FILE, JSON.stringify(stats));
   } catch (_) {}
+};
+
+// Formats log details: [ job_id ] resolution, aspect ratio, seconds, fps and abbreviated prompt
+const format_job_log = (meta) => {
+  const short_prompt = (meta.prompt || 'No Prompt')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const truncated_prompt = short_prompt.length > 50 
+    ? `${short_prompt.slice(0, 47)}...` 
+    : short_prompt;
+
+  return `[ ${meta.job_id} ] ${meta.resolution} | ${meta.aspect_ratio} | ${meta.duration_sec}s | ${meta.fps}fps | "${truncated_prompt}"`;
+};
+
+// ============================================
+// Cloud Discovery & Teardown Handlers
+// ============================================
+const resolve_hyperstack_vm_id = async () => {
+  if (HYPERSTACK_VM_ID !== null) return HYPERSTACK_VM_ID;
+
+  if (is_modal_runtime() || !HYPERSTACK_API_KEY) {
+    HYPERSTACK_VM_ID = false;
+    return null;
+  }
+
+  try {
+    const res = await fetch(`${HYPERSTACK_API_URL}/core/virtual-machines`, {
+      method: 'GET',
+      headers: get_hyperstack_headers()
+    });
+
+    if (!res.ok) {
+      HYPERSTACK_VM_ID = false;
+      return null;
+    }
+
+    const data = await res.json();
+    const instances = data.instances || [];
+    const match = instances.find((vm) => vm.name?.toLowerCase() === MACHINE_ID.toLowerCase());
+
+    if (!match) {
+      HYPERSTACK_VM_ID = false;
+      return null;
+    }
+
+    HYPERSTACK_VM_ID = match.id;
+    return HYPERSTACK_VM_ID;
+  } catch (err) {
+    HYPERSTACK_VM_ID = false;
+    return null;
+  }
+};
+
+const hibernate_vm = async () => {
+  try {
+    const vm_id = await resolve_hyperstack_vm_id();
+    if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
+
+    const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: get_hyperstack_headers()
+    });
+
+    if (!res.ok) {
+      const err_text = await res.text();
+      throw new Error(`HTTP ${res.status}: ${err_text}`);
+    }
+
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('[Hibernate Error]:', err.message);
+    return null;
+  }
 };
 
 const flush_pending_uploads = async () => {
   if (active_uploads.size > 0) {
-    console.log(`[Worker] Waiting for ${active_uploads.size} background upload(s) to complete...`);
+    console.log(`[Worker] Waiting for ${active_uploads.size} background upload(s) to finalize...`);
     await Promise.allSettled(Array.from(active_uploads));
-    console.log('[Worker] All background uploads resolved.');
+    console.log('[Worker] All uploads resolved.');
   }
+  await sync_stats_file();
+};
+
+const handle_inactivity_shutdown = async () => {
+  console.log('[Worker] Inactivity limit reached. Initiating teardown...');
+  await flush_pending_uploads();
+
+  if (is_modal_runtime()) {
+    process.exit(0);
+  }
+
+  const vm_id = await resolve_hyperstack_vm_id();
+  if (vm_id) {
+    await hibernate_vm();
+    process.exit(0);
+  }
+
+  process.exit(0);
 };
 
 // ============================================
-// API INTERACTION
+// API Operations
 // ============================================
-
-const poll_for_job = async (job_type) => {
+const poll_for_job = async (job_type, model) => {
   try {
-    const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&models=${encodeURIComponent(SUPPORTED_MODELS)}`;
+    const url = `${API_BASE_URL}/v1/worker/get?job_type=${encodeURIComponent(job_type)}&models=${encodeURIComponent(model)}`;
     const response = await fetch(url, {
       method: 'GET',
-      headers: get_api_headers(),
+      headers: get_api_headers()
     });
 
     if (response.status === 404) return null;
@@ -153,9 +232,18 @@ const complete_job = async (job_id, output_url, generation_time_sec) => {
   const response = await fetch(url, {
     method: 'POST',
     headers: get_api_headers(),
-    body: JSON.stringify({ job_id, output_url, generation_time_sec }),
+    body: JSON.stringify({
+      job_id,
+      output_url,
+      generation_time_sec
+    })
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
+  if (!response.ok) {
+    const err_text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${err_text}`);
+  }
+
   return await response.json();
 };
 
@@ -164,17 +252,31 @@ const fail_job = async (job_id, error_message) => {
   const response = await fetch(url, {
     method: 'POST',
     headers: get_api_headers(),
-    body: JSON.stringify({ job_id, error_message }),
+    body: JSON.stringify({
+      job_id,
+      error_message: typeof error_message === 'string' ? error_message : (error_message?.message || 'Worker failure')
+    })
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
+  if (!response.ok) {
+    const err_text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${err_text}`);
+  }
+
   return await response.json();
 };
 
+// ============================================
+// ComfyUI Engine
+// ============================================
 const wait_for_comfy_ready = async () => {
   console.log('[ComfyUI] Probing server readiness on port 8188...');
+  const health_url = `${COMFY_HOST}/history`;
+
   while (true) {
     try {
-      if ((await fetch(`${COMFY_HOST}/history`)).ok) {
+      const res = await fetch(health_url);
+      if (res.ok) {
         console.log('[ComfyUI] Server online and responsive.');
         break;
       }
@@ -183,106 +285,49 @@ const wait_for_comfy_ready = async () => {
   }
 };
 
-// ============================================
-// WORKFLOW LOGIC
-// ============================================
-
-const mutate_workflow = (workflow, job_params, model, downloaded_filenames = []) => {
-  const { job_id, prompt = '', duration_sec = 5, fps = 24, aspect_ratio = '16:9', resolution = '720p' } = job_params;
-  const aspect_label = ASPECT_RATIO_MAP[aspect_ratio] || '16:9 (Widescreen)';
-  const mp_val = RESOLUTION_MEGAPIXELS[resolution] || 2.1;
-  const filename_prefix = `video/${model}_${job_id}`;
-
-  for (const [node_id, node] of Object.entries(workflow)) {
-    if (node.class_type === 'PrimitiveInt' && (node._meta?.title === 'Duration' || node._meta?.title?.toLowerCase().includes('duration'))) {
-      node.inputs.value = duration_sec;
+const update_workflow_duration = (workflow, duration_seconds, fps = 24) => {
+  for (const [, node] of Object.entries(workflow)) {
+    // Reverted to exact match to avoid modifying unintended nodes
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
+      node.inputs.value = duration_seconds;
     }
-    if (node.class_type === 'PrimitiveInt' && (node._meta?.title?.toLowerCase().includes('frame rate') || node._meta?.title?.toLowerCase().includes('fps'))) {
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Frame Rate') {
       node.inputs.value = fps;
     }
     if (node.class_type === 'RandomNoise') {
       node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
     }
   }
+  return workflow;
+};
 
-  for (const [node_id, node] of Object.entries(workflow)) {
-    if (node.class_type === 'ResolutionSelector') {
-      node.inputs.aspect_ratio = aspect_label;
-      node.inputs.megapixels = mp_val;
-    }
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.toLowerCase() === 'width') {
-      node.inputs.value = resolution === '720p' ? 1280 : resolution === '2k-hd' ? 2560 : resolution === '4k-hd' ? 3840 : 1920;
-    }
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.toLowerCase() === 'height') {
-      node.inputs.value = resolution === '720p' ? 720 : resolution === '2k-hd' ? 1440 : resolution === '4k-hd' ? 2160 : 1080;
-    }
-  }
+const set_workflow_image = (workflow, downloaded_filenames) => {
+  const files = Array.isArray(downloaded_filenames) ? downloaded_filenames : [downloaded_filenames];
+  if (files.length === 0) return workflow;
 
-  for (const [node_id, node] of Object.entries(workflow)) {
-    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-      node.inputs.value = prompt_text;
-    }
-    if (node.class_type === 'CLIPTextEncode' && !node._meta?.title?.toLowerCase().includes('negative')) {
-      if (typeof node.inputs.text === 'string') {
-        node.inputs.text = prompt_text;
+  for (const [, node] of Object.entries(workflow)) {
+    if (node.class_type === 'LoadImage') {
+      if (node._meta?.title === 'Load Last Frame' && files.length >= 2) {
+        node.inputs.image = files[1];
+      } else {
+        node.inputs.image = files[0];
       }
     }
   }
+  return workflow;
+};
 
-  // switch (model) {
-  //   case 'ltx-i2v': {
-  //     if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
-  //     if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
-  //     if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
-  //     if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
-  //     if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
-  //     // if (workflow['403']?.inputs) {
-  //     //   workflow['403'].inputs.aspect_ratio = aspect_label;
-  //     //   workflow['403'].inputs.megapixels = mp_val;
-  //     // }
-  //     if (workflow['395']?.inputs && downloaded_filenames[0]) workflow['395'].inputs.image = downloaded_filenames[0];
-  //     if (workflow['398:339']?.inputs) workflow['398:339'].inputs.noise_seed = get_random_seed();
-  //     if (workflow['398:338']?.inputs) workflow['398:338'].inputs.noise_seed = get_random_seed();
-  //     if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
-  //     break;
-  //   }
-  //   case 'ltx-t2v': {
-  //     if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
-  //     if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
-  //     if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
-  //     if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
-  //     if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
-  //     if (workflow['409']?.inputs) {
-  //       workflow['409'].inputs.aspect_ratio = aspect_label;
-  //       workflow['409'].inputs.megapixels = mp_val;
-  //     }
-  //     if (workflow['405:339']?.inputs) workflow['405:339'].inputs.noise_seed = get_random_seed();
-  //     if (workflow['405:338']?.inputs) workflow['405:338'].inputs.noise_seed = get_random_seed();
-  //     if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
-  //     break;
-  //   }
-  //   case 'ltx-flf2v': {
-  //     if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
-  //     if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
-  //     if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
-  //     if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
-  //     if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
-
-  //     const dims = (RESOLUTION_DIMENSIONS[aspect_ratio] && RESOLUTION_DIMENSIONS[aspect_ratio][resolution])
-  //       ? RESOLUTION_DIMENSIONS[aspect_ratio][resolution]
-  //       : { width: 1920, height: 1080 };
-
-  //     if (workflow['251:215']?.inputs) workflow['251:215'].inputs.value = dims.width;
-  //     if (workflow['251:216']?.inputs) workflow['251:216'].inputs.value = dims.height;
-  //     if (workflow['31']?.inputs && downloaded_filenames[0]) workflow['31'].inputs.image = downloaded_filenames[0];
-  //     if (workflow['39']?.inputs && downloaded_filenames[1]) workflow['39'].inputs.image = downloaded_filenames[1];
-  //     if (workflow['251:196']?.inputs) workflow['251:196'].inputs.noise_seed = get_random_seed();
-  //     if (workflow['68']?.inputs) workflow['68'].inputs.filename_prefix = filename_prefix;
-  //     break;
-  //   }
-  //   default:
-  //     throw new Error(`Unsupported model identifier in mutation: ${model}`);
-  // }
+const set_workflow_prompt = (workflow, prompt_text) => {
+  for (const [, node] of Object.entries(workflow)) {
+    // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
+    if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+      node.inputs.text = prompt_text;
+    }
+    // Continue to support the multiline nodes used in ltx-t2v/flf2v
+    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+      node.inputs.value = prompt_text;
+    }
+  }
   return workflow;
 };
 
@@ -293,14 +338,18 @@ const execute_workflow = async (workflow) => {
     body: JSON.stringify({ prompt: workflow }),
   });
 
-  if (!response.ok) throw new Error(`Workflow rejection: ${response.status} - ${await response.text()}`);
+  if (!response.ok) {
+    const err_text = await response.text();
+    throw new Error(`Workflow rejection: ${response.status} - ${err_text}`);
+  }
 
   const { prompt_id } = await response.json();
   const start_time = Date.now();
 
   while (true) {
-    await sleep(1000);
+    await sleep(250);
     const history_res = await fetch(`${COMFY_HOST}/history/${prompt_id}`);
+
     if (history_res.ok) {
       const history_data = await history_res.json();
       if (history_data[prompt_id]) {
@@ -310,6 +359,9 @@ const execute_workflow = async (workflow) => {
   }
 };
 
+// ============================================
+// Filesystem & Storage Operations
+// ============================================
 const find_latest_mp4 = async (dir) => {
   const files = [];
   const walk = async (current_dir) => {
@@ -317,14 +369,16 @@ const find_latest_mp4 = async (dir) => {
       const entries = await readdir(current_dir, { withFileTypes: true });
       for (const entry of entries) {
         const full_path = join(current_dir, entry.name);
-        if (entry.isDirectory()) await walk(full_path);
-        else if (entry.name.endsWith('.mp4') && !entry.name.startsWith('uploading_')) {
+        if (entry.isDirectory()) {
+          await walk(full_path);
+        } else if (entry.name.endsWith('.mp4') && !entry.name.startsWith('uploading_')) {
           const stats = await stat(full_path);
           files.push({ path: full_path, mtime: stats.mtime });
         }
       }
     } catch (_) {}
   };
+
   await walk(dir);
   if (files.length === 0) return null;
   files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
@@ -341,157 +395,133 @@ const download_image = async (url, filename) => {
   return image_path;
 };
 
-// ============================================
-// UPLOAD LOGIC (BACKGROUND)
-// ============================================
-
 const upload_to_r2 = async (file_path, job_id) => {
   const key = `generations/${job_id}.mp4`;
   const file_stream = createReadStream(file_path);
+
   await s3_client.send(new PutObjectCommand({
     Bucket: R2_BUCKET_NAME,
     Key: key,
     Body: file_stream,
     ContentType: 'video/mp4',
   }));
+
   return `${R2_CDN_URL}/${key}`;
 };
 
-const upload_and_complete_async = async (job_id, isolated_path, downloaded_files, generation_time) => {
+const upload_and_complete_async = async (job_id, isolated_path, generation_time, downloaded_filenames = []) => {
   try {
-    console.log(`[Job ${job_id}] Uploading generated MP4 to Cloudflare R2...`);
     const r2_url = await upload_to_r2(isolated_path, job_id);
-    console.log(`[Job ${job_id}] R2 upload complete: ${r2_url}. Notifying API...`);
     await complete_job(job_id, r2_url, generation_time);
-    console.log(`[Job ${job_id}] Finalized successfully.`);
+    console.log(`[Job ${job_id}] Upload & complete finished in background.`);
   } catch (err) {
     console.error(`[Job ${job_id}] Background upload/complete failed:`, err.message);
     try { await fail_job(job_id, err.message); } catch (_) {}
   } finally {
     try { await unlink(isolated_path); } catch (_) {}
-    for (const filename of downloaded_files) {
-      try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
-    }
-  }
-};
-
-// ============================================
-// PIPELINE STAGE 1: PREFETCH JOB & ASSETS
-// ============================================
-
-const prefetch_job = async (job_type) => {
-  let job_id = null;
-  try {
-    const result = await poll_for_job(job_type);
-    if (!result || !result.success || !result.data) return null;
-
-    const job_data = result.data;
-    job_id = job_data.job_id || job_data.id;
-    console.log(`[Prefetch] Claimed Job ID: ${job_id} (Model: ${job_data.model}). Downloading assets...`);
-
-    const input = job_data.input || {};
-    const images = input.images || (job_data.image_url ? [job_data.image_url] : []);
-    const downloaded_filenames = [];
-
-    for (let i = 0; i < images.length; i++) {
-      const ext = images[i].split('.').pop().split('?')[0] || 'jpg';
-      const filename = `${job_id}_frame_${i}.${ext}`;
-      await download_image(images[i], filename);
-      downloaded_filenames.push(filename);
-    }
     
-    console.log(`[Prefetch] Assets ready for Job ID: ${job_id}.`);
-    return { job_data, downloaded_filenames };
-
-  } catch (err) {
-    console.error(`[Prefetch Error] Failed to prepare job:`, err.message);
-    if (job_id) {
-      try { await fail_job(job_id, `Prefetch download failed: ${err.message}`); } catch (_) {}
-    }
-    return null; 
-  }
-};
-
-// ============================================
-// PIPELINE STAGE 2: GENERATE ON GPU
-// ============================================
-
-const execute_prepared_job = async ({ job_data, downloaded_filenames }) => {
-  const job_id = job_data.job_id || job_data.id;
-  const model = job_data.model || 'ltx-i2v';
-  const input = job_data.input || {};
-  const prompt = input.prompt || job_data.prompt || '';
-  const duration_sec = parseInt(input.duration_sec || job_data.duration_sec, 10) || 5;
-  const fps = parseInt(input.fps || job_data.fps, 10) || 24;
-  const aspect_ratio = input.aspect_ratio || '16:9';
-  const resolution = input.resolution || '720p';
-
-  let retry_count = 0;
-  console.log(`[GPU Task] Processing Job ID: ${job_id} (${model}) - Duration: ${duration_sec}s @ ${fps}fps - Res: ${resolution}`);
-
-  const workflow_file = WORKFLOW_MAP[model];
-  if (!workflow_file) {
-    const err_msg = `Unsupported model identifier: ${model}`;
-    console.error(`[Job ${job_id}] ${err_msg}`);
-    await fail_job(job_id, err_msg);
-    // Cleanup bad inputs locally
-    for (const filename of downloaded_filenames) {
-      try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
-    }
-    return false;
-  }
-
-  while (retry_count < MAX_RETRY_COUNT) {
-    try {
-      const raw_workflow = readFileSync(workflow_file, 'utf-8');
-      let workflow = JSON.parse(raw_workflow);
-      workflow = mutate_workflow(workflow, { job_id, prompt, duration_sec, fps, aspect_ratio, resolution }, model, downloaded_filenames);
-
-      const generation_time = await execute_workflow(workflow);
-      const output_file = await find_latest_mp4(OUTPUT_DIR);
-
-      if (!output_file) throw new Error('Generation finished but MP4 output was not found.');
-
-      const isolated_path = join(OUTPUT_DIR, `uploading_${job_id}.mp4`);
-      await rename(output_file, isolated_path);
-
-      console.log(`[Job ${job_id}] GPU Generation finished in ${generation_time.toFixed(2)}s. Offloading upload.`);
-
-      JOBS_PROCESSED++;
-      TOTAL_GENERATION_TIME += generation_time;
-      await write_session_stats();
-
-      // Launch Stage 3: background upload
-      const upload_task = upload_and_complete_async(job_id, isolated_path, downloaded_filenames, generation_time);
-      active_uploads.add(upload_task);
-      upload_task.finally(() => active_uploads.delete(upload_task));
-
-      return true;
-
-    } catch (err) {
-      retry_count++;
-      console.error(`[Job ${job_id}] GPU Generation attempt ${retry_count} failed: ${err.message}`);
-
-      if (retry_count >= MAX_RETRY_COUNT) {
-        try { await fail_job(job_id, err.message); } catch (_) {}
-        // Clean up input files on total failure
-        for (const filename of downloaded_filenames) {
-          try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
-        }
-        return false;
+    // Clean up dynamic files or fallback for safe backwards-compatibility
+    if (downloaded_filenames.length === 0) {
+      try { await unlink(join(INPUT_DIR, `${job_id}.jpg`)); } catch (_) {}
+    } else {
+      for (const fn of downloaded_filenames) {
+        try { await unlink(join(INPUT_DIR, fn)); } catch (_) {}
       }
-      await sleep(retry_count * 3000);
     }
   }
-  return false;
 };
 
 // ============================================
-// MAIN PIPELINE LOOP
+// Pipeline Step: Fetch & Prepare Task
 // ============================================
+const prepare_job = async (job_data) => {
+  const { job_id, job_type, model, input } = job_data;
+  
+  // Extract parameters
+  const duration_sec = input?.duration_sec ?? job_data.duration_sec ?? 5;
+  const fps = input?.fps ?? job_data.fps ?? 24;
+  const prompt = input?.prompt ?? job_data.prompt ?? '';
+  const resolution = input?.resolution ?? job_data.resolution ?? '720p';
+  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9';
 
+  const model_id = model || 'ltx-i2v';
+  const workflow_path = WORKFLOW_MAP[model_id];
+  if (!workflow_path) {
+    throw new Error(`Unsupported model identifier: ${model_id}`);
+  }
+
+  const images = (Array.isArray(input?.images) && input.images.length > 0)
+    ? input.images
+    : (input?.image_url ?? job_data.image_url ? [input?.image_url ?? job_data.image_url] : []);
+
+  const downloaded_filenames = [];
+
+  if (model_id === 'ltx-i2v') {
+    if (images.length === 0) throw new Error('No valid image URL found in job payload');
+    const image_filename = `${job_id}.jpg`;
+    await download_image(images[0], image_filename);
+    downloaded_filenames.push(image_filename);
+  } else if (model_id === 'ltx-flf2v') {
+    if (images.length < 2) throw new Error('ltx-flf2v requires at least 2 image URLs');
+    const filename1 = `${job_id}_first.jpg`;
+    const filename2 = `${job_id}_last.jpg`;
+    await download_image(images[0], filename1);
+    await download_image(images[1], filename2);
+    downloaded_filenames.push(filename1, filename2);
+  } 
+  // ltx-t2v deliberately bypasses image downloading
+
+  const raw_workflow = readFileSync(workflow_path, 'utf-8');
+  let workflow = JSON.parse(raw_workflow);
+
+  workflow = update_workflow_duration(workflow, duration_sec, fps);
+  workflow = set_workflow_image(workflow, downloaded_filenames);
+  workflow = set_workflow_prompt(workflow, prompt);
+
+  return {
+    job_id,
+    job_type,
+    model: model_id,
+    workflow,
+    downloaded_filenames,
+    meta: {
+      job_id,
+      resolution,
+      aspect_ratio,
+      duration_sec,
+      fps,
+      prompt
+    }
+  };
+};
+
+const prefetch_next_job = async (job_type, model) => {
+  try {
+    const result = await poll_for_job(job_type, model);
+    if (!result || !result.success || !result.data) {
+      return null;
+    }
+
+    try {
+      const prepared_job = await prepare_job(result.data);
+      console.log(`[Prefetched] ${format_job_log(prepared_job.meta)}`);
+      return prepared_job;
+    } catch (prep_err) {
+      console.error(`[Job ${result.data.job_id}] Preparation failed:`, prep_err.message);
+      try { await fail_job(result.data.job_id, prep_err.message); } catch (_) {}
+      return null;
+    }
+  } catch (err) {
+    console.error('[Pipeline] Prefetch error:', err.message);
+    return null;
+  }
+};
+
+// ============================================
+// Main Execution Loop
+// ============================================
 const worker_loop = async () => {
-  console.log(`[Worker] Daemon active on host: ${MACHINE_ID}`);
+  console.log(`[Worker] Started on host: ${MACHINE_ID}`);
 
   if (!WORKER_API_SECRET) {
     console.error('[Worker Fatal] WORKER_API_SECRET environment variable is missing.');
@@ -500,55 +530,91 @@ const worker_loop = async () => {
 
   await mkdir(INPUT_DIR, { recursive: true });
   await mkdir(OUTPUT_DIR, { recursive: true });
+  await sync_stats_file();
+
   await wait_for_comfy_ready();
 
-  let empty_poll_count = 0;
-  let prefetch_promise = null; // The background task fetching the NEXT job
+  const job_type = process.env.JOB_TYPE || 'generate';
+  // If user passes a default fallback model, grab it - otherwise poll for all supported
+  const model = process.env.MODEL || Object.keys(WORKFLOW_MAP).join(',');
 
-  console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s (Supported Models: ${SUPPORTED_MODELS})...`);
+  let current_job = null;
+  let prefetch_promise = null;
+  let empty_poll_count = 0;
+
+  console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s...`);
 
   while (true) {
     try {
-      const job_type = process.env.JOB_TYPE || 'generate';
-
-      // 1. Kick off a prefetch if one isn't already running
-      if (!prefetch_promise) {
-        prefetch_promise = prefetch_job(job_type);
+      // 1. Resolve or fetch the active job to render
+      if (prefetch_promise) {
+        current_job = await prefetch_promise;
+        prefetch_promise = null;
       }
 
-      // 2. Wait for the prefetch to yield a job (instantly resolves if it already finished in the background)
-      const prepared_job = await prefetch_promise;
+      if (!current_job) {
+        current_job = await prefetch_next_job(job_type, model);
+      }
 
-      if (!prepared_job) {
-        // No jobs available on API right now.
+      // 2. Inactivity tracking
+      if (!current_job) {
         empty_poll_count++;
         console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
         if (empty_poll_count >= MAX_EMPTY_POLLS) {
-          console.log('[Worker] Inactivity limit reached. Exiting worker loop...');
-          await flush_pending_uploads();
-          await write_session_stats();
-          process.exit(0);
+          await handle_inactivity_shutdown();
         }
 
         await sleep(POLL_INTERVAL_SECONDS * 1000);
-        prefetch_promise = null; // Reset promise so we trigger a fresh poll next loop
         continue;
       }
 
-      // 3. We successfully got a job to process!
       empty_poll_count = 0;
+      
+      // Log job start with resolution, aspect ratio, duration, fps, and prompt
+      console.log(`[GPU Render] ${format_job_log(current_job.meta)}`);
 
-      // 4. KICK OFF THE NEXT PREFETCH IMMEDIATELY! 
-      // This runs asynchronously in the background while the GPU blocks the main thread below.
-      prefetch_promise = prefetch_job(job_type);
+      // 3. Immediately kick off prefetch for Job N+1 in parallel with GPU generation
+      prefetch_promise = prefetch_next_job(job_type, model);
 
-      // 5. Run the current job on the GPU
-      await execute_prepared_job(prepared_job);
+      // 4. Render Job N
+      let generation_time = 0;
+      let render_success = false;
+
+      try {
+        generation_time = await execute_workflow(current_job.workflow);
+        render_success = true;
+      } catch (render_err) {
+        console.error(`[Job ${current_job.job_id}] Render failed:`, render_err.message);
+        try { await fail_job(current_job.job_id, render_err.message); } catch (_) {}
+      }
+
+      // 5. Isolate MP4 & delegate upload to non-blocking background task
+      if (render_success) {
+        const output_file = await find_latest_mp4(OUTPUT_DIR);
+        if (output_file) {
+          const isolated_path = join(OUTPUT_DIR, `uploading_${current_job.job_id}.mp4`);
+          await rename(output_file, isolated_path);
+
+          total_jobs_processed++;
+          total_generation_time_sec += generation_time;
+          await sync_stats_file();
+
+          console.log(`[Job ${current_job.job_id}] Rendered in ${generation_time.toFixed(2)}s. Queuing async upload.`);
+          const upload_task = upload_and_complete_async(current_job.job_id, isolated_path, generation_time, current_job.downloaded_filenames);
+          active_uploads.add(upload_task);
+          upload_task.finally(() => active_uploads.delete(upload_task));
+        } else {
+          console.error(`[Job ${current_job.job_id}] Output MP4 was not found.`);
+          try { await fail_job(current_job.job_id, 'Generated MP4 missing'); } catch (_) {}
+        }
+      }
+
+      // Clear current job slot so next iteration immediately grabs the prefetched job
+      current_job = null;
 
     } catch (err) {
-      console.error('[Worker] Loop error:', err.message);
-      empty_poll_count++;
+      console.error('[Worker] Unexpected error in main loop:', err.message);
       await sleep(POLL_INTERVAL_SECONDS * 1000);
     }
   }
@@ -557,7 +623,6 @@ const worker_loop = async () => {
 const handle_exit = async () => {
   console.log('[Worker] Termination signal received.');
   await flush_pending_uploads();
-  await write_session_stats();
   process.exit(0);
 };
 
