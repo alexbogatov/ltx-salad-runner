@@ -48,9 +48,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          secrets: |
-            HF_TOKEN=${{ secrets.HF_TOKEN }}
 
-      - name: Clean up Docker builder cache
+      - name: Prune Docker build cache
         if: always()
-        run: docker builder prune -f
+        run: docker builder prune -af --filter "until=24h"
+
+      - name: Clean runner workspace
+        if: always()
+        run: rm -rf ${{ github.workspace }}/*
