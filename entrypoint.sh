@@ -90,6 +90,19 @@ ln -sfn "${STORAGE_DIR}/vae" /app/ComfyUI/models/vae
 ln -sfn "${STORAGE_DIR}/latent_upscale_models" /app/ComfyUI/models/latent_upscale_models
 
 # ==============================================================================
+# 3.5 Download Models
+# ==============================================================================
+echo "[Startup] Running dl.sh to check and download missing models..."
+
+SCRIPT_DIR=$(dirname "$0")
+
+if [ -f "$SCRIPT_DIR/dl.sh" ]; then
+    bash "$SCRIPT_DIR/dl.sh"
+else
+    echo "[Warning] dl.sh not found in $SCRIPT_DIR. Proceeding without downloading models."
+fi
+
+# ==============================================================================
 # 4. Launch ComfyUI & Worker Daemon
 # ==============================================================================
 cd /app
