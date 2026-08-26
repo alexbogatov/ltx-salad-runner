@@ -1,6 +1,6 @@
 // worker.js
 
-import os from 'os'; 
+import os from 'os';
 import { readFileSync, createReadStream } from 'fs';
 import { mkdir, writeFile, readdir, stat, unlink, rename } from 'fs/promises';
 import { join } from 'path';
@@ -11,7 +11,11 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 // ============================================
 const COMFY_PORT = 8188;
 const COMFY_HOST = `http://127.0.0.1:${COMFY_PORT}`;
-const WORKFLOW_PATH = join(process.cwd(), 'video_ltx2_5_i2v.json');
+const WORKFLOW_MAP = {
+  'ltx-i2v': join(process.cwd(), 'video_ltx2_5_i2v.json'),
+  'ltx-t2v': join(process.cwd(), 'video_ltx2_5_t2v.json'),
+  'ltx-flf2v': join(process.cwd(), 'video_ltx2_5_flf2v.json'),
+};
 const INPUT_DIR = join(process.cwd(), 'ComfyUI', 'input');
 const OUTPUT_DIR = join(process.cwd(), 'ComfyUI', 'output');
 const STATS_FILE = '/tmp/worker_stats.json';
@@ -283,10 +287,10 @@ const wait_for_comfy_ready = async () => {
 
 const update_workflow_duration = (workflow, duration_seconds, fps = 24) => {
   for (const [, node] of Object.entries(workflow)) {
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.includes('Duration')) {
       node.inputs.value = duration_seconds;
     }
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Frame Rate') {
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.includes('Frame Rate')) {
       node.inputs.value = fps;
     }
     if (node.class_type === 'RandomNoise') {
@@ -296,10 +300,17 @@ const update_workflow_duration = (workflow, duration_seconds, fps = 24) => {
   return workflow;
 };
 
-const set_workflow_image = (workflow, image_filename) => {
+const set_workflow_image = (workflow, downloaded_filenames) => {
+  const files = Array.isArray(downloaded_filenames) ? downloaded_filenames : [downloaded_filenames];
+  if (files.length === 0) return workflow;
+
   for (const [, node] of Object.entries(workflow)) {
     if (node.class_type === 'LoadImage') {
-      node.inputs.image = image_filename;
+      if (node._meta?.title === 'Load Last Frame' && files.length >= 2) {
+        node.inputs.image = files[1];
+      } else {
+        node.inputs.image = files[0];
+      }
     }
   }
   return workflow;
@@ -307,8 +318,15 @@ const set_workflow_image = (workflow, image_filename) => {
 
 const set_workflow_prompt = (workflow, prompt_text) => {
   for (const [, node] of Object.entries(workflow)) {
+    // Target the old-style direct CLIPTextEncode injection
     if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-      node.inputs.text = prompt_text;
+      if (typeof node.inputs.text === 'string') {
+        node.inputs.text = prompt_text;
+      }
+    }
+    // Target the PrimitiveStringMultiline used in newer ltx-t2v/flf2v workflows
+    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+      node.inputs.value = prompt_text;
     }
   }
   return workflow;
@@ -392,8 +410,7 @@ const upload_to_r2 = async (file_path, job_id) => {
   return `${R2_CDN_URL}/${key}`;
 };
 
-const upload_and_complete_async = async (job_id, isolated_path, generation_time) => {
-  const input_file = join(INPUT_DIR, `${job_id}.jpg`);
+const upload_and_complete_async = async (job_id, isolated_path, generation_time, downloaded_filenames = []) => {
   try {
     const r2_url = await upload_to_r2(isolated_path, job_id);
     await complete_job(job_id, r2_url, generation_time);
@@ -403,7 +420,15 @@ const upload_and_complete_async = async (job_id, isolated_path, generation_time)
     try { await fail_job(job_id, err.message); } catch (_) {}
   } finally {
     try { await unlink(isolated_path); } catch (_) {}
-    try { await unlink(input_file); } catch (_) {}
+    
+    // Clean up dynamic files or fallback for safe backwards-compatibility
+    if (downloaded_filenames.length === 0) {
+      try { await unlink(join(INPUT_DIR, `${job_id}.jpg`)); } catch (_) {}
+    } else {
+      for (const fn of downloaded_filenames) {
+        try { await unlink(join(INPUT_DIR, fn)); } catch (_) {}
+      }
+    }
   }
 };
 
@@ -420,29 +445,46 @@ const prepare_job = async (job_data) => {
   const resolution = input?.resolution ?? job_data.resolution ?? '720p';
   const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9';
 
-  const image_url = (Array.isArray(input?.images) && input.images.length > 0)
-    ? input.images[0]
-    : (input?.image_url ?? job_data.image_url);
-
-  if (!image_url) {
-    throw new Error('No valid image URL found in job payload');
+  const model_id = model || 'ltx-i2v';
+  const workflow_path = WORKFLOW_MAP[model_id];
+  if (!workflow_path) {
+    throw new Error(`Unsupported model identifier: ${model_id}`);
   }
 
-  const image_filename = `${job_id}.jpg`;
-  await download_image(image_url, image_filename);
+  const images = (Array.isArray(input?.images) && input.images.length > 0)
+    ? input.images
+    : (input?.image_url ?? job_data.image_url ? [input?.image_url ?? job_data.image_url] : []);
 
-  const raw_workflow = readFileSync(WORKFLOW_PATH, 'utf-8');
+  const downloaded_filenames = [];
+
+  if (model_id === 'ltx-i2v') {
+    if (images.length === 0) throw new Error('No valid image URL found in job payload');
+    const image_filename = `${job_id}.jpg`;
+    await download_image(images[0], image_filename);
+    downloaded_filenames.push(image_filename);
+  } else if (model_id === 'ltx-flf2v') {
+    if (images.length < 2) throw new Error('ltx-flf2v requires at least 2 image URLs');
+    const filename1 = `${job_id}_first.jpg`;
+    const filename2 = `${job_id}_last.jpg`;
+    await download_image(images[0], filename1);
+    await download_image(images[1], filename2);
+    downloaded_filenames.push(filename1, filename2);
+  } 
+  // ltx-t2v deliberately bypasses image downloading
+
+  const raw_workflow = readFileSync(workflow_path, 'utf-8');
   let workflow = JSON.parse(raw_workflow);
 
   workflow = update_workflow_duration(workflow, duration_sec, fps);
-  workflow = set_workflow_image(workflow, image_filename);
+  workflow = set_workflow_image(workflow, downloaded_filenames);
   workflow = set_workflow_prompt(workflow, prompt);
 
   return {
     job_id,
     job_type,
-    model,
+    model: model_id,
     workflow,
+    downloaded_filenames,
     meta: {
       job_id,
       resolution,
@@ -494,7 +536,8 @@ const worker_loop = async () => {
   await wait_for_comfy_ready();
 
   const job_type = process.env.JOB_TYPE || 'generate';
-  const model = process.env.MODEL || 'ltx-i2v';
+  // If user passes a default fallback model, grab it - otherwise poll for all supported
+  const model = process.env.MODEL || Object.keys(WORKFLOW_MAP).join(',');
 
   let current_job = null;
   let prefetch_promise = null;
@@ -559,7 +602,7 @@ const worker_loop = async () => {
           await sync_stats_file();
 
           console.log(`[Job ${current_job.job_id}] Rendered in ${generation_time.toFixed(2)}s. Queuing async upload.`);
-          const upload_task = upload_and_complete_async(current_job.job_id, isolated_path, generation_time);
+          const upload_task = upload_and_complete_async(current_job.job_id, isolated_path, generation_time, current_job.downloaded_filenames);
           active_uploads.add(upload_task);
           upload_task.finally(() => active_uploads.delete(upload_task));
         } else {
