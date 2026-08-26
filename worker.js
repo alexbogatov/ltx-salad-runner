@@ -94,23 +94,15 @@ const s3_client = new S3Client({
   },
 });
 
-const sleep = (ms) => {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const get_api_headers = () => {
-  return {
-    'worker-auth': WORKER_API_SECRET,
-    'x-machine-id': MACHINE_ID,
-    'content-type': 'application/json',
-  };
-};
+const get_api_headers = () => ({
+  'worker-auth': WORKER_API_SECRET,
+  'x-machine-id': MACHINE_ID,
+  'content-type': 'application/json',
+});
 
-const get_random_seed = () => {
-  return Math.floor(Math.random() * 1000000000000000);
-};
+const get_random_seed = () => Math.floor(Math.random() * 1000000000000000);
 
 const write_session_stats = async () => {
   try {
@@ -130,6 +122,10 @@ const flush_pending_uploads = async () => {
   }
 };
 
+// ============================================
+// API INTERACTION
+// ============================================
+
 const poll_for_job = async (job_type) => {
   try {
     const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&models=${encodeURIComponent(SUPPORTED_MODELS)}`;
@@ -138,9 +134,7 @@ const poll_for_job = async (job_type) => {
       headers: get_api_headers(),
     });
 
-    if (response.status === 404) {
-      return null;
-    }
+    if (response.status === 404) return null;
 
     if (!response.ok) {
       const err_text = await response.text();
@@ -159,18 +153,9 @@ const complete_job = async (job_id, output_url, generation_time_sec) => {
   const response = await fetch(url, {
     method: 'POST',
     headers: get_api_headers(),
-    body: JSON.stringify({
-      job_id,
-      output_url,
-      generation_time_sec,
-    }),
+    body: JSON.stringify({ job_id, output_url, generation_time_sec }),
   });
-
-  if (!response.ok) {
-    const err_text = await response.text();
-    throw new Error(`HTTP ${response.status}: ${err_text}`);
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   return await response.json();
 };
 
@@ -179,192 +164,100 @@ const fail_job = async (job_id, error_message) => {
   const response = await fetch(url, {
     method: 'POST',
     headers: get_api_headers(),
-    body: JSON.stringify({
-      job_id,
-      error_message,
-    }),
+    body: JSON.stringify({ job_id, error_message }),
   });
-
-  if (!response.ok) {
-    const err_text = await response.text();
-    throw new Error(`HTTP ${response.status}: ${err_text}`);
-  }
-
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   return await response.json();
 };
 
 const wait_for_comfy_ready = async () => {
   console.log('[ComfyUI] Probing server readiness on port 8188...');
-  const health_url = `${COMFY_HOST}/history`;
-
   while (true) {
     try {
-      const res = await fetch(health_url);
-      if (res.ok) {
+      if ((await fetch(`${COMFY_HOST}/history`)).ok) {
         console.log('[ComfyUI] Server online and responsive.');
         break;
       }
     } catch (_) {}
-    await sleep(500);
+    await sleep(250);
   }
 };
 
-const mutate_workflow = (workflow, job_params, model, downloaded_filenames = []) => {
-  const {
-    job_id,
-    prompt = '',
-    duration_sec = 5,
-    fps = 24,
-    aspect_ratio = '16:9',
-    resolution = '720p',
-  } = job_params;
+// ============================================
+// WORKFLOW LOGIC
+// ============================================
 
+const mutate_workflow = (workflow, job_params, model, downloaded_filenames = []) => {
+  const { job_id, prompt = '', duration_sec = 5, fps = 24, aspect_ratio = '16:9', resolution = '720p' } = job_params;
   const aspect_label = ASPECT_RATIO_MAP[aspect_ratio] || '16:9 (Widescreen)';
   const mp_val = RESOLUTION_MEGAPIXELS[resolution] || 2.1;
   const filename_prefix = `video/${model}_${job_id}`;
 
   switch (model) {
     case 'ltx-i2v': {
-      if (workflow['398:376']?.inputs) {
-        workflow['398:376'].inputs.value = prompt;
-      }
-      if (workflow['398:362']?.inputs) {
-        workflow['398:362'].inputs.value = duration_sec;
-      }
-      if (workflow['398:361']?.inputs) {
-        workflow['398:361'].inputs.value = fps;
-      }
-
-      if (workflow['398:373']?.inputs) {
-        workflow['398:373'].inputs.text = '';
-      }
-      if (workflow['398:383']?.inputs) {
-        workflow['398:383'].inputs.value = false;
-      }
-
-      if (workflow['403']?.inputs) {
-        workflow['403'].inputs.aspect_ratio = aspect_label;
-        workflow['403'].inputs.megapixels = mp_val;
-      }
-
-      if (workflow['395']?.inputs && downloaded_filenames[0]) {
-        workflow['395'].inputs.image = downloaded_filenames[0];
-      }
-
-      if (workflow['398:339']?.inputs) {
-        workflow['398:339'].inputs.noise_seed = get_random_seed();
-      }
-      if (workflow['398:338']?.inputs) {
-        workflow['398:338'].inputs.noise_seed = get_random_seed();
-      }
-
-      if (workflow['75']?.inputs) {
-        workflow['75'].inputs.filename_prefix = filename_prefix;
-      }
+      if (workflow['398:376']?.inputs) workflow['398:376'].inputs.value = prompt;
+      if (workflow['398:362']?.inputs) workflow['398:362'].inputs.value = duration_sec;
+      if (workflow['398:361']?.inputs) workflow['398:361'].inputs.value = fps;
+      if (workflow['398:373']?.inputs) workflow['398:373'].inputs.text = '';
+      if (workflow['398:383']?.inputs) workflow['398:383'].inputs.value = false;
+      // if (workflow['403']?.inputs) {
+      //   workflow['403'].inputs.aspect_ratio = aspect_label;
+      //   workflow['403'].inputs.megapixels = mp_val;
+      // }
+      if (workflow['395']?.inputs && downloaded_filenames[0]) workflow['395'].inputs.image = downloaded_filenames[0];
+      if (workflow['398:339']?.inputs) workflow['398:339'].inputs.noise_seed = get_random_seed();
+      if (workflow['398:338']?.inputs) workflow['398:338'].inputs.noise_seed = get_random_seed();
+      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
       break;
     }
-
     case 'ltx-t2v': {
-      if (workflow['405:376']?.inputs) {
-        workflow['405:376'].inputs.value = prompt;
-      }
-      if (workflow['405:362']?.inputs) {
-        workflow['405:362'].inputs.value = duration_sec;
-      }
-      if (workflow['405:361']?.inputs) {
-        workflow['405:361'].inputs.value = fps;
-      }
-
-      if (workflow['405:373']?.inputs) {
-        workflow['405:373'].inputs.text = '';
-      }
-      if (workflow['405:383']?.inputs) {
-        workflow['405:383'].inputs.value = false;
-      }
-
+      if (workflow['405:376']?.inputs) workflow['405:376'].inputs.value = prompt;
+      if (workflow['405:362']?.inputs) workflow['405:362'].inputs.value = duration_sec;
+      if (workflow['405:361']?.inputs) workflow['405:361'].inputs.value = fps;
+      if (workflow['405:373']?.inputs) workflow['405:373'].inputs.text = '';
+      if (workflow['405:383']?.inputs) workflow['405:383'].inputs.value = false;
       if (workflow['409']?.inputs) {
         workflow['409'].inputs.aspect_ratio = aspect_label;
         workflow['409'].inputs.megapixels = mp_val;
       }
-
-      if (workflow['405:339']?.inputs) {
-        workflow['405:339'].inputs.noise_seed = get_random_seed();
-      }
-      if (workflow['405:338']?.inputs) {
-        workflow['405:338'].inputs.noise_seed = get_random_seed();
-      }
-
-      if (workflow['75']?.inputs) {
-        workflow['75'].inputs.filename_prefix = filename_prefix;
-      }
+      if (workflow['405:339']?.inputs) workflow['405:339'].inputs.noise_seed = get_random_seed();
+      if (workflow['405:338']?.inputs) workflow['405:338'].inputs.noise_seed = get_random_seed();
+      if (workflow['75']?.inputs) workflow['75'].inputs.filename_prefix = filename_prefix;
       break;
     }
-
     case 'ltx-flf2v': {
-      if (workflow['251:252']?.inputs) {
-        workflow['251:252'].inputs.value = prompt;
-      }
-      if (workflow['251:198']?.inputs) {
-        workflow['251:198'].inputs.value = duration_sec;
-      }
-      if (workflow['251:205']?.inputs) {
-        workflow['251:205'].inputs.value = fps;
-      }
-
-      if (workflow['251:217']?.inputs) {
-        workflow['251:217'].inputs.text = '';
-      }
-      if (workflow['251:250']?.inputs) {
-        workflow['251:250'].inputs.value = false;
-      }
+      if (workflow['251:252']?.inputs) workflow['251:252'].inputs.value = prompt;
+      if (workflow['251:198']?.inputs) workflow['251:198'].inputs.value = duration_sec;
+      if (workflow['251:205']?.inputs) workflow['251:205'].inputs.value = fps;
+      if (workflow['251:217']?.inputs) workflow['251:217'].inputs.text = '';
+      if (workflow['251:250']?.inputs) workflow['251:250'].inputs.value = false;
 
       const dims = (RESOLUTION_DIMENSIONS[aspect_ratio] && RESOLUTION_DIMENSIONS[aspect_ratio][resolution])
         ? RESOLUTION_DIMENSIONS[aspect_ratio][resolution]
         : { width: 1920, height: 1080 };
 
-      if (workflow['251:215']?.inputs) {
-        workflow['251:215'].inputs.value = dims.width;
-      }
-      if (workflow['251:216']?.inputs) {
-        workflow['251:216'].inputs.value = dims.height;
-      }
-
-      if (workflow['31']?.inputs && downloaded_filenames[0]) {
-        workflow['31'].inputs.image = downloaded_filenames[0];
-      }
-      if (workflow['39']?.inputs && downloaded_filenames[1]) {
-        workflow['39'].inputs.image = downloaded_filenames[1];
-      }
-
-      if (workflow['251:196']?.inputs) {
-        workflow['251:196'].inputs.noise_seed = get_random_seed();
-      }
-
-      if (workflow['68']?.inputs) {
-        workflow['68'].inputs.filename_prefix = filename_prefix;
-      }
+      if (workflow['251:215']?.inputs) workflow['251:215'].inputs.value = dims.width;
+      if (workflow['251:216']?.inputs) workflow['251:216'].inputs.value = dims.height;
+      if (workflow['31']?.inputs && downloaded_filenames[0]) workflow['31'].inputs.image = downloaded_filenames[0];
+      if (workflow['39']?.inputs && downloaded_filenames[1]) workflow['39'].inputs.image = downloaded_filenames[1];
+      if (workflow['251:196']?.inputs) workflow['251:196'].inputs.noise_seed = get_random_seed();
+      if (workflow['68']?.inputs) workflow['68'].inputs.filename_prefix = filename_prefix;
       break;
     }
-
-    default: {
+    default:
       throw new Error(`Unsupported model identifier in mutation: ${model}`);
-    }
   }
-
   return workflow;
 };
 
-const execute_workflow = async (workflow, job_id) => {
+const execute_workflow = async (workflow) => {
   const response = await fetch(`${COMFY_HOST}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: workflow }),
   });
 
-  if (!response.ok) {
-    const err_text = await response.text();
-    throw new Error(`Workflow rejection: ${response.status} - ${err_text}`);
-  }
+  if (!response.ok) throw new Error(`Workflow rejection: ${response.status} - ${await response.text()}`);
 
   const { prompt_id } = await response.json();
   const start_time = Date.now();
@@ -372,7 +265,6 @@ const execute_workflow = async (workflow, job_id) => {
   while (true) {
     await sleep(1000);
     const history_res = await fetch(`${COMFY_HOST}/history/${prompt_id}`);
-
     if (history_res.ok) {
       const history_data = await history_res.json();
       if (history_data[prompt_id]) {
@@ -389,31 +281,23 @@ const find_latest_mp4 = async (dir) => {
       const entries = await readdir(current_dir, { withFileTypes: true });
       for (const entry of entries) {
         const full_path = join(current_dir, entry.name);
-        if (entry.isDirectory()) {
-          await walk(full_path);
-        } else if (entry.name.endsWith('.mp4') && !entry.name.startsWith('uploading_')) {
+        if (entry.isDirectory()) await walk(full_path);
+        else if (entry.name.endsWith('.mp4') && !entry.name.startsWith('uploading_')) {
           const stats = await stat(full_path);
           files.push({ path: full_path, mtime: stats.mtime });
         }
       }
     } catch (_) {}
   };
-
   await walk(dir);
-  if (files.length === 0) {
-    return null;
-  }
-  files.sort((a, b) => {
-    return b.mtime.getTime() - a.mtime.getTime();
-  });
+  if (files.length === 0) return null;
+  files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
   return files[0].path;
 };
 
 const download_image = async (url, filename) => {
   const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Image download failed: ${res.statusText}`);
-  }
+  if (!res.ok) throw new Error(`Image download failed: ${res.statusText}`);
   const buffer = await res.arrayBuffer();
   await mkdir(INPUT_DIR, { recursive: true });
   const image_path = join(INPUT_DIR, filename);
@@ -421,17 +305,19 @@ const download_image = async (url, filename) => {
   return image_path;
 };
 
+// ============================================
+// UPLOAD LOGIC (BACKGROUND)
+// ============================================
+
 const upload_to_r2 = async (file_path, job_id) => {
   const key = `generations/${job_id}.mp4`;
   const file_stream = createReadStream(file_path);
-
   await s3_client.send(new PutObjectCommand({
     Bucket: R2_BUCKET_NAME,
     Key: key,
     Body: file_stream,
     ContentType: 'video/mp4',
   }));
-
   return `${R2_CDN_URL}/${key}`;
 };
 
@@ -444,109 +330,129 @@ const upload_and_complete_async = async (job_id, isolated_path, downloaded_files
     console.log(`[Job ${job_id}] Finalized successfully.`);
   } catch (err) {
     console.error(`[Job ${job_id}] Background upload/complete failed:`, err.message);
-    try {
-      await fail_job(job_id, err.message);
-    } catch (_) {}
+    try { await fail_job(job_id, err.message); } catch (_) {}
   } finally {
-    try {
-      await unlink(isolated_path);
-    } catch (_) {}
+    try { await unlink(isolated_path); } catch (_) {}
     for (const filename of downloaded_files) {
-      try {
-        await unlink(join(INPUT_DIR, filename));
-      } catch (_) {}
+      try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
     }
   }
 };
 
-const process_job = async (job_data) => {
+// ============================================
+// PIPELINE STAGE 1: PREFETCH JOB & ASSETS
+// ============================================
+
+const prefetch_job = async (job_type) => {
+  let job_id = null;
+  try {
+    const result = await poll_for_job(job_type);
+    if (!result || !result.success || !result.data) return null;
+
+    const job_data = result.data;
+    job_id = job_data.job_id || job_data.id;
+    console.log(`[Prefetch] Claimed Job ID: ${job_id} (Model: ${job_data.model}). Downloading assets...`);
+
+    const input = job_data.input || {};
+    const images = input.images || (job_data.image_url ? [job_data.image_url] : []);
+    const downloaded_filenames = [];
+
+    for (let i = 0; i < images.length; i++) {
+      const ext = images[i].split('.').pop().split('?')[0] || 'jpg';
+      const filename = `${job_id}_frame_${i}.${ext}`;
+      await download_image(images[i], filename);
+      downloaded_filenames.push(filename);
+    }
+    
+    console.log(`[Prefetch] Assets ready for Job ID: ${job_id}.`);
+    return { job_data, downloaded_filenames };
+
+  } catch (err) {
+    console.error(`[Prefetch Error] Failed to prepare job:`, err.message);
+    if (job_id) {
+      try { await fail_job(job_id, `Prefetch download failed: ${err.message}`); } catch (_) {}
+    }
+    return null; 
+  }
+};
+
+// ============================================
+// PIPELINE STAGE 2: GENERATE ON GPU
+// ============================================
+
+const execute_prepared_job = async ({ job_data, downloaded_filenames }) => {
   const job_id = job_data.job_id || job_data.id;
   const model = job_data.model || 'ltx-i2v';
   const input = job_data.input || {};
   const prompt = input.prompt || job_data.prompt || '';
-  const images = input.images || (job_data.image_url ? [job_data.image_url] : []);
   const duration_sec = parseInt(input.duration_sec || job_data.duration_sec, 10) || 5;
   const fps = parseInt(input.fps || job_data.fps, 10) || 24;
   const aspect_ratio = input.aspect_ratio || '16:9';
   const resolution = input.resolution || '720p';
 
   let retry_count = 0;
-  console.log(`[Job ${job_id}] Processing (${model}) - Duration: ${duration_sec}s @ ${fps}fps - Res: ${resolution} (${aspect_ratio})`);
+  console.log(`[GPU Task] Processing Job ID: ${job_id} (${model}) - Duration: ${duration_sec}s @ ${fps}fps - Res: ${resolution}`);
 
   const workflow_file = WORKFLOW_MAP[model];
   if (!workflow_file) {
     const err_msg = `Unsupported model identifier: ${model}`;
     console.error(`[Job ${job_id}] ${err_msg}`);
     await fail_job(job_id, err_msg);
+    // Cleanup bad inputs locally
+    for (const filename of downloaded_filenames) {
+      try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
+    }
     return false;
   }
 
   while (retry_count < MAX_RETRY_COUNT) {
-    const downloaded_filenames = [];
-
     try {
-      for (let i = 0; i < images.length; i++) {
-        const ext = images[i].split('.').pop().split('?')[0] || 'jpg';
-        const filename = `${job_id}_frame_${i}.${ext}`;
-        await download_image(images[i], filename);
-        downloaded_filenames.push(filename);
-      }
-
       const raw_workflow = readFileSync(workflow_file, 'utf-8');
       let workflow = JSON.parse(raw_workflow);
+      workflow = mutate_workflow(workflow, { job_id, prompt, duration_sec, fps, aspect_ratio, resolution }, model, downloaded_filenames);
 
-      workflow = mutate_workflow(
-        workflow,
-        { job_id, prompt, duration_sec, fps, aspect_ratio, resolution },
-        model,
-        downloaded_filenames
-      );
-
-      const generation_time = await execute_workflow(workflow, job_id);
+      const generation_time = await execute_workflow(workflow);
       const output_file = await find_latest_mp4(OUTPUT_DIR);
 
-      if (!output_file) {
-        throw new Error('Generation finished but MP4 output was not found.');
-      }
+      if (!output_file) throw new Error('Generation finished but MP4 output was not found.');
 
       const isolated_path = join(OUTPUT_DIR, `uploading_${job_id}.mp4`);
       await rename(output_file, isolated_path);
 
-      console.log(`[Job ${job_id}] Finished generation in ${generation_time.toFixed(2)}s. Offloaded upload to background.`);
+      console.log(`[Job ${job_id}] GPU Generation finished in ${generation_time.toFixed(2)}s. Offloading upload.`);
 
       JOBS_PROCESSED++;
       TOTAL_GENERATION_TIME += generation_time;
       await write_session_stats();
 
+      // Launch Stage 3: background upload
       const upload_task = upload_and_complete_async(job_id, isolated_path, downloaded_filenames, generation_time);
       active_uploads.add(upload_task);
-      upload_task.finally(() => {
-        active_uploads.delete(upload_task);
-      });
+      upload_task.finally(() => active_uploads.delete(upload_task));
 
       return true;
+
     } catch (err) {
       retry_count++;
-      console.error(`[Job ${job_id}] Attempt ${retry_count} failed: ${err.message}`);
-
-      for (const filename of downloaded_filenames) {
-        try {
-          await unlink(join(INPUT_DIR, filename));
-        } catch (_) {}
-      }
+      console.error(`[Job ${job_id}] GPU Generation attempt ${retry_count} failed: ${err.message}`);
 
       if (retry_count >= MAX_RETRY_COUNT) {
-        try {
-          await fail_job(job_id, err.message);
-        } catch (_) {}
+        try { await fail_job(job_id, err.message); } catch (_) {}
+        // Clean up input files on total failure
+        for (const filename of downloaded_filenames) {
+          try { await unlink(join(INPUT_DIR, filename)); } catch (_) {}
+        }
         return false;
       }
-
       await sleep(retry_count * 3000);
     }
   }
   return false;
 };
+
+// ============================================
+// MAIN PIPELINE LOOP
+// ============================================
 
 const worker_loop = async () => {
   console.log(`[Worker] Daemon active on host: ${MACHINE_ID}`);
@@ -558,18 +464,27 @@ const worker_loop = async () => {
 
   await mkdir(INPUT_DIR, { recursive: true });
   await mkdir(OUTPUT_DIR, { recursive: true });
-
   await wait_for_comfy_ready();
 
   let empty_poll_count = 0;
+  let prefetch_promise = null; // The background task fetching the NEXT job
+
   console.log(`[Worker] Polling for jobs every ${POLL_INTERVAL_SECONDS}s (Supported Models: ${SUPPORTED_MODELS})...`);
 
   while (true) {
     try {
       const job_type = process.env.JOB_TYPE || 'generate';
-      const result = await poll_for_job(job_type);
 
-      if (!result || !result.success || !result.data) {
+      // 1. Kick off a prefetch if one isn't already running
+      if (!prefetch_promise) {
+        prefetch_promise = prefetch_job(job_type);
+      }
+
+      // 2. Wait for the prefetch to yield a job (instantly resolves if it already finished in the background)
+      const prepared_job = await prefetch_promise;
+
+      if (!prepared_job) {
+        // No jobs available on API right now.
         empty_poll_count++;
         console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
@@ -581,14 +496,19 @@ const worker_loop = async () => {
         }
 
         await sleep(POLL_INTERVAL_SECONDS * 1000);
+        prefetch_promise = null; // Reset promise so we trigger a fresh poll next loop
         continue;
       }
 
-      const active_id = result.data.job_id || result.data.id;
-      console.log(`[Worker] Claimed Job ID: ${active_id} (Model: ${result.data.model})`);
-
+      // 3. We successfully got a job to process!
       empty_poll_count = 0;
-      await process_job(result.data);
+
+      // 4. KICK OFF THE NEXT PREFETCH IMMEDIATELY! 
+      // This runs asynchronously in the background while the GPU blocks the main thread below.
+      prefetch_promise = prefetch_job(job_type);
+
+      // 5. Run the current job on the GPU
+      await execute_prepared_job(prepared_job);
 
     } catch (err) {
       console.error('[Worker] Loop error:', err.message);
