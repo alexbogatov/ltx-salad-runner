@@ -285,52 +285,107 @@ const wait_for_comfy_ready = async () => {
   }
 };
 
-const update_workflow_duration = (workflow, duration_seconds, fps = 24) => {
+
+const mutate_workflow = (workflow, model, prompt, images, resolution = '720p', duration_seconds = 5, fps = 24) => {
+  // Map standard resolution strings to megapixels 
+  const resolution_map = {
+    '720p': 0.9,
+    '1080p': 2.1,
+    '2k-hd': 3.7,
+    '4k-hd': 8.3
+  };
+  const megapixels = resolution_map[resolution] || 0.9;
+  
+  const files = Array.isArray(images) ? images : [images];
+
   for (const [, node] of Object.entries(workflow)) {
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.includes('Duration')) {
+    // 1. Duration, FPS, and Seed
+    if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
       node.inputs.value = duration_seconds;
     }
-    if (node.class_type === 'PrimitiveInt' && node._meta?.title?.includes('Frame Rate')) {
+    if (node.class_type === 'PrimitiveInt' && (node._meta?.title === 'Frame Rate' || node._meta?.title === 'Frame Rate(int)')) {
       node.inputs.value = fps;
     }
     if (node.class_type === 'RandomNoise') {
       node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
     }
-  }
-  return workflow;
-};
 
-const set_workflow_image = (workflow, downloaded_filenames) => {
-  const files = Array.isArray(downloaded_filenames) ? downloaded_filenames : [downloaded_filenames];
-  if (files.length === 0) return workflow;
+    // 2. Resolution (Megapixels)
+    if (node.class_type === 'ResolutionSelector') {
+      node.inputs.megapixels = megapixels;
+    }
 
-  for (const [, node] of Object.entries(workflow)) {
-    if (node.class_type === 'LoadImage') {
+    // 3. Images
+    if (node.class_type === 'LoadImage' && files.length > 0) {
       if (node._meta?.title === 'Load Last Frame' && files.length >= 2) {
         node.inputs.image = files[1];
       } else {
         node.inputs.image = files[0];
       }
     }
+
+    // // 4. Prompt (Retaining the negative prompt overwrite bug)
+    // if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+    //   node.inputs.text = prompt;
+    // }
+    // if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+    //   node.inputs.value = prompt;
+    // }
+
+    // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
+    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+      node.inputs.value = prompt;
+    }
   }
+
   return workflow;
 };
 
-const set_workflow_prompt = (workflow, prompt_text) => {
-  for (const [, node] of Object.entries(workflow)) {
-    // Target the old-style direct CLIPTextEncode injection
-    if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-      if (typeof node.inputs.text === 'string') {
-        node.inputs.text = prompt_text;
-      }
-    }
-    // Target the PrimitiveStringMultiline used in newer ltx-t2v/flf2v workflows
-    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-      node.inputs.value = prompt_text;
-    }
-  }
-  return workflow;
-};
+// const update_workflow_duration = (workflow, duration_sec, fps = 24) => {
+//   for (const [, node] of Object.entries(workflow)) {
+//     // Reverted to exact match to avoid modifying unintended nodes
+//     if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Duration') {
+//       node.inputs.value = duration_sec;
+//     }
+//     if (node.class_type === 'PrimitiveInt' && node._meta?.title === 'Frame Rate') {
+//       node.inputs.value = fps;
+//     }
+//     if (node.class_type === 'RandomNoise') {
+//       node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
+//     }
+//   }
+//   return workflow;
+// };
+
+// const set_workflow_image = (workflow, downloaded_filenames) => {
+//   const files = Array.isArray(downloaded_filenames) ? downloaded_filenames : [downloaded_filenames];
+//   if (files.length === 0) return workflow;
+
+//   for (const [, node] of Object.entries(workflow)) {
+//     if (node.class_type === 'LoadImage') {
+//       if (node._meta?.title === 'Load Last Frame' && files.length >= 2) {
+//         node.inputs.image = files[1];
+//       } else {
+//         node.inputs.image = files[0];
+//       }
+//     }
+//   }
+//   return workflow;
+// };
+
+// const set_workflow_prompt = (workflow, prompt_text) => {
+//   for (const [, node] of Object.entries(workflow)) {
+//     // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
+//     if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+//       node.inputs.text = prompt_text;
+//     }
+//     // Continue to support the multiline nodes used in ltx-t2v/flf2v
+//     if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+//       node.inputs.value = prompt_text;
+//     }
+//   }
+//   return workflow;
+// };
 
 const execute_workflow = async (workflow) => {
   const response = await fetch(`${COMFY_HOST}/prompt`, {
@@ -475,9 +530,19 @@ const prepare_job = async (job_data) => {
   const raw_workflow = readFileSync(workflow_path, 'utf-8');
   let workflow = JSON.parse(raw_workflow);
 
-  workflow = update_workflow_duration(workflow, duration_sec, fps);
-  workflow = set_workflow_image(workflow, downloaded_filenames);
-  workflow = set_workflow_prompt(workflow, prompt);
+  workflow = mutate_workflow(
+    workflow, 
+    model_id, 
+    prompt, 
+    downloaded_filenames, 
+    resolution, 
+    duration_sec, 
+    fps
+  );
+
+  // workflow = update_workflow_duration(workflow, duration_sec, fps);
+  // workflow = set_workflow_image(workflow, downloaded_filenames);
+  // workflow = set_workflow_prompt(workflow, prompt);
 
   return {
     job_id,
