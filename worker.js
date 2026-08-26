@@ -324,14 +324,6 @@ const mutate_workflow = (workflow, model, prompt, images, resolution = '720p', d
       }
     }
 
-    // // 4. Prompt (Retaining the negative prompt overwrite bug)
-    // if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-    //   node.inputs.text = prompt;
-    // }
-    // if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-    //   node.inputs.value = prompt;
-    // }
-
     // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
     if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
       node.inputs.value = prompt;
