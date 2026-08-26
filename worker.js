@@ -181,7 +181,7 @@ const handle_inactivity_shutdown = async () => {
 // ============================================
 const poll_for_job = async (job_type, model) => {
   try {
-    const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&model=${model}`;
+    const url = `${API_BASE_URL}/v1/worker/get?job_type=${job_type}&models=${model}`;
     const response = await fetch(url, {
       method: 'GET',
       headers: get_api_headers()
