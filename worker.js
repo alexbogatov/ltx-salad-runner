@@ -324,7 +324,6 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
       }
     }
 
-    set_workflow_prompt(workflow, prompt);
 
     // if (enhance_prompt) {
     //   // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
@@ -352,6 +351,9 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
     //   node.inputs.text = prompt; // Injects prompt directly without LLM delay
     // }
   }
+
+  set_workflow_prompt(workflow, prompt);
+
 
   return workflow;
 };
