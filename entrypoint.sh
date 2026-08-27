@@ -7,9 +7,7 @@ echo "===================================================="
 echo "[Startup] Initializing LTX 2.5 Runner Environment"
 echo "===================================================="
 
-# ------------------------------------------------------------------------------
 # 1. Platform & GPU Auto-Discovery
-# ------------------------------------------------------------------------------
 if [ -n "$MODAL_TASK_ID" ] || [ -n "$MODAL_IS_REMOTE" ] || [ -n "$MODAL_ENVIRONMENT" ]; then
     export RUNNER_PLATFORM="modal"
 elif [ -n "$HYPERSTACK_API_KEY" ]; then
@@ -35,9 +33,9 @@ echo "[Platform] Runtime  : $RUNNER_PLATFORM"
 echo "[Hardware] GPU Model: $RUNNER_GPU_NAME ($RUNNER_GPU_COUNT detected, $RUNNER_GPU_VRAM VRAM)"
 echo "===================================================="
 
-# ------------------------------------------------------------------------------
-# 2. Call /v1/worker/on (Register active session before workloads)
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 2. CALL /v1/worker/on (Runs BEFORE ComfyUI or any processing starts)
+# ==============================================================================
 echo "[Billing] Registering worker startup session via /v1/worker/on..."
 SESSION_PAYLOAD=$(cat <<EOF
 {
@@ -70,16 +68,14 @@ else
     echo "[Billing Warning] Could not initialize session tracking."
 fi
 
-# ------------------------------------------------------------------------------
+# ==============================================================================
 # 3. Storage Setup & Symlinks
-# ------------------------------------------------------------------------------
+# ==============================================================================
 STORAGE_DIR="/workspace/models"
 
-# Clean up stale processes and locks
 pkill -f "main.py" || true
 rm -f /app/ComfyUI/user/comfyui.db.lock || true
 
-# Ensure directories exist
 mkdir -p "${STORAGE_DIR}/diffusion_models" \
          "${STORAGE_DIR}/text_encoders" \
          "${STORAGE_DIR}/vae" \
@@ -87,101 +83,35 @@ mkdir -p "${STORAGE_DIR}/diffusion_models" \
          "/workspace/output" \
          /app/ComfyUI/models
 
-# Symlink persistent storage into baked ComfyUI instance
 ln -sfn /workspace/output /app/ComfyUI/output
 ln -sfn "${STORAGE_DIR}/diffusion_models" /app/ComfyUI/models/diffusion_models
 ln -sfn "${STORAGE_DIR}/text_encoders" /app/ComfyUI/models/text_encoders
 ln -sfn "${STORAGE_DIR}/vae" /app/ComfyUI/models/vae
 ln -sfn "${STORAGE_DIR}/latent_upscale_models" /app/ComfyUI/models/latent_upscale_models
 
-# ------------------------------------------------------------------------------
-# 4. Model Fetcher (Checks local disk cache, downloads missing weights)
-# ------------------------------------------------------------------------------
-echo "=============================================================================="
-echo "[Models] Verifying cached weights..."
-echo "=============================================================================="
-
-R2_CDN="https://cdn.runltx.com/models"
-fetch_weight() {
-    local target_path=$1
-    local url=$2
-    local label=$3
-    local step_name=$4
-
-    if [ ! -s "$target_path" ]; then
-        echo "[Download] Fetching $label..."
-        rm -f "$target_path" "${target_path}.tmp"
-
-        if command -v aria2c &> /dev/null; then
-            aria2c -x 8 -s 8 -k 1M --console-log-level=warn -d "$(dirname "$target_path")" -o "$(basename "$target_path").tmp" "$url"
-        else
-            curl -fL --retry 5 --retry-delay 2 -o "${target_path}.tmp" "$url"
-        fi
-
-        mv "${target_path}.tmp" "$target_path"
-        echo "[Download] $label completed."
-    else
-        echo "[Check] $label already cached on persistent disk."
-    fi
-}
-
-fetch_weight "${STORAGE_DIR}/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
-             "${R2_CDN}/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors" \
-             "Diffusion Model (22B Distilled INT8)" "1-diffusion"
-
-fetch_weight "${STORAGE_DIR}/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
-             "${R2_CDN}/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors" \
-             "Text Encoder A (Gemma 4 12B INT8)" "2-text-encoder-a"
-
-fetch_weight "${STORAGE_DIR}/text_encoders/gemma4_e2b_it_bf16.safetensors" \
-             "${R2_CDN}/text_encoders/gemma4_e2b_it_bf16.safetensors" \
-             "Text Encoder B (Gemma 4 12B BF16)" "3-text-encoder-b"
-
-fetch_weight "${STORAGE_DIR}/vae/ltx-2.5-video-vae-bf16.safetensors" \
-             "${R2_CDN}/vae/ltx-2.5-video-vae-bf16.safetensors" \
-             "Video VAE" "4-video-vae"
-
-fetch_weight "${STORAGE_DIR}/vae/ltx-2.5-audio-vae-bf16.safetensors" \
-             "${R2_CDN}/vae/ltx-2.5-audio-vae-bf16.safetensors" \
-             "Audio VAE" "5-audio-vae"
-
-fetch_weight "${STORAGE_DIR}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
-             "${R2_CDN}/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors" \
-             "Latent Spatial Upscaler" "6-upscaler"
-
-echo "=============================================================================="
-
-# ------------------------------------------------------------------------------
-# 5. Start ComfyUI & Worker Daemon
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 4. Launch ComfyUI & Worker Daemon
+# ==============================================================================
 cd /app
-if [ "$1" = "idle" ] || [ "$1" = "sleep" ]; then
-    echo "[Idle Mode] Keeping container alive for debugging..."
-    exec sleep infinity
-else
-    # Start ComfyUI in the background and capture PID
-    /opt/venv/bin/python3 /app/ComfyUI/main.py --listen 0.0.0.0 --port 8188 --highvram --fast &
-    COMFY_PID=$!
+/opt/venv/bin/python3 /app/ComfyUI/main.py --listen 0.0.0.0 --port 8188 --highvram --fast &
+COMFY_PID=$!
 
-    echo "[Startup] Waiting for ComfyUI on port 8188..."
-    until curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; do
-        sleep 1
-    done
-    echo "[Startup] ComfyUI ready. Launching worker daemon..."
+echo "[Startup] Waiting for ComfyUI on port 8188..."
+until curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; do
+    sleep 1
+done
+echo "[Startup] ComfyUI ready. Launching worker daemon..."
 
-    # Launch worker.js (blocks until termination or timeout)
-    set +e
-    node worker.js
-    WORKER_EXIT_CODE=$?
-    set -e
+# Execute worker (handles queue polling until inactivity timeout)
+node worker.js
+WORKER_EXIT_CODE=$?
 
-    # Stop ComfyUI background process
-    kill -9 $COMFY_PID 2>/dev/null || true
-fi
+# Kill ComfyUI background process
+kill -9 $COMFY_PID 2>/dev/null || true
 
-# ------------------------------------------------------------------------------
-# 6. Call /v1/worker/off & Handle Hibernation
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 5. CALL /v1/worker/off & HIBERNATE (Runs at teardown)
+# ==============================================================================
 echo "[Billing] Finalizing worker session via /v1/worker/off..."
 
 STATS_FILE="/tmp/worker_stats.json"
@@ -211,7 +141,7 @@ curl -s -X POST "${API_BASE_URL}/v1/worker/off" \
 
 echo "[Billing] Session closed."
 
-# Trigger Hyperstack VM Hibernation if applicable
+# Trigger Hyperstack VM Hibernation
 if [ "$RUNNER_PLATFORM" = "hyperstack" ] && [ -n "$HYPERSTACK_API_KEY" ]; then
     echo "[Teardown] Requesting Hyperstack VM Hibernation for host: ${MACHINE_ID}..."
     HYPERSTACK_API_URL="${HYPERSTACK_API_URL:-https://infrahub-api.nexgencloud.com/v1}"
