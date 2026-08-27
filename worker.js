@@ -310,10 +310,10 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
       node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
     }
 
-    // 2. Resolution (Megapixels)
-    if (node.class_type === 'ResolutionSelector') {
-      node.inputs.megapixels = megapixels;
-    }
+    // // 2. Resolution (Megapixels)
+    // if (node.class_type === 'ResolutionSelector') {
+    //   node.inputs.megapixels = megapixels;
+    // }
 
     // 3. Images
     if (node.class_type === 'LoadImage' && files.length > 0) {
@@ -324,26 +324,28 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
       }
     }
 
-    if (enhance_prompt) {
-      // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
-      if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-        node.inputs.value = prompt;
-      }
-    } else {
-      if (class_type === 'CLIPTextEncode') {
-        const l_title = title.toLowerCase();
+    set_workflow_prompt(workflow, prompt);
+
+    // if (enhance_prompt) {
+    //   // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
+    //   if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+    //     node.inputs.value = prompt;
+    //   }
+    // } else {
+    //   if (class_type === 'CLIPTextEncode') {
+    //     const l_title = title.toLowerCase();
         
-        // Guard against negative nodes, styles, or specific helper encoders
-        const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
+    //     // Guard against negative nodes, styles, or specific helper encoders
+    //     const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
 
-        // Match default ComfyUI title or explicitly tagged positive nodes
-        const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
+    //     // Match default ComfyUI title or explicitly tagged positive nodes
+    //     const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
 
-        if (!is_negative && is_positive) {
-          node.inputs.text = prompt;
-        }
-      }
-    }
+    //     if (!is_negative && is_positive) {
+    //       node.inputs.text = prompt;
+    //     }
+    //   }
+    // }
 
 
     // if (class_type === 'CLIPTextEncode' && !title.toLowerCase().includes('negative')) {
@@ -386,19 +388,19 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
 //   return workflow;
 // };
 
-// const set_workflow_prompt = (workflow, prompt_text) => {
-//   for (const [, node] of Object.entries(workflow)) {
-//     // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
-//     if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-//       node.inputs.text = prompt_text;
-//     }
-//     // Continue to support the multiline nodes used in ltx-t2v/flf2v
-//     if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-//       node.inputs.value = prompt_text;
-//     }
-//   }
-//   return workflow;
-// };
+const set_workflow_prompt = (workflow, prompt_text) => {
+  for (const [, node] of Object.entries(workflow)) {
+    // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
+    if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+      node.inputs.text = prompt_text;
+    }
+    // Continue to support the multiline nodes used in ltx-t2v/flf2v
+    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+      node.inputs.value = prompt_text;
+    }
+  }
+  return workflow;
+};
 
 const execute_workflow = async (workflow) => {
   const response = await fetch(`${COMFY_HOST}/prompt`, {
