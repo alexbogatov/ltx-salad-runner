@@ -310,10 +310,10 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
       node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
     }
 
-    // // 2. Resolution (Megapixels)
-    // if (node.class_type === 'ResolutionSelector') {
-    //   node.inputs.megapixels = megapixels;
-    // }
+    // 2. Resolution (Megapixels)
+    if (node.class_type === 'ResolutionSelector') {
+      node.inputs.megapixels = megapixels;
+    }
 
     // 3. Images
     if (node.class_type === 'LoadImage' && files.length > 0) {
