@@ -286,7 +286,7 @@ const wait_for_comfy_ready = async () => {
 };
 
 
-const mutate_workflow = (workflow, model, prompt, images, resolution = '720p', duration_seconds = 5, fps = 24) => {
+const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolution = '720p', duration_seconds = 5, fps = 24) => {
   // Map standard resolution strings to megapixels 
   const resolution_map = {
     '720p': 0.9,
@@ -324,10 +324,31 @@ const mutate_workflow = (workflow, model, prompt, images, resolution = '720p', d
       }
     }
 
-    // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
-    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-      node.inputs.value = prompt;
+    if (enhance_prompt) {
+      // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
+      if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+        node.inputs.value = prompt;
+      }
+    } else {
+      if (class_type === 'CLIPTextEncode') {
+        const l_title = title.toLowerCase();
+        
+        // Guard against negative nodes, styles, or specific helper encoders
+        const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
+
+        // Match default ComfyUI title or explicitly tagged positive nodes
+        const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
+
+        if (!is_negative && is_positive) {
+          node.inputs.text = prompt;
+        }
+      }
     }
+
+
+    // if (class_type === 'CLIPTextEncode' && !title.toLowerCase().includes('negative')) {
+    //   node.inputs.text = prompt; // Injects prompt directly without LLM delay
+    // }
   }
 
   return workflow;
@@ -490,7 +511,8 @@ const prepare_job = async (job_data) => {
   const fps = input?.fps ?? job_data.fps ?? 24;
   const prompt = input?.prompt ?? job_data.prompt ?? '';
   const resolution = input?.resolution ?? job_data.resolution ?? '720p';
-  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9';
+  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9'
+  const enhance_prompt = input?.enhance_prompt ?? job_data.enhance_prompt ?? 'false';
 
   const model_id = model || 'ltx-i2v';
   const workflow_path = WORKFLOW_MAP[model_id];
@@ -526,6 +548,7 @@ const prepare_job = async (job_data) => {
     workflow, 
     model_id, 
     prompt, 
+    enhance_prompt,
     downloaded_filenames, 
     resolution, 
     duration_sec, 
