@@ -111,7 +111,7 @@ const format_job_log = (meta) => {
     ? `${short_prompt.slice(0, 47)}...` 
     : short_prompt;
 
-  return `[ ${meta.job_id} ] ${meta.resolution} | ${meta.aspect_ratio} | ${meta.duration_sec}s | ${meta.fps}fps | "${truncated_prompt}"`;
+  return `[ ${meta.job_id} ] ${meta.resolution} | ${meta.aspect_ratio} | ${meta.duration_sec}s | ${meta.fps}fps | enhance: ${meta.enhance_prompt} | "${truncated_prompt}"`;
 };
 
 // // ============================================
@@ -318,10 +318,10 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
       node.inputs.noise_seed = Math.floor(Math.random() * 1000000000000000);
     }
 
-    // 2. Resolution (Megapixels)
-    if (node.class_type === 'ResolutionSelector') {
-      node.inputs.megapixels = megapixels;
-    }
+    // // 2. Resolution (Megapixels)
+    // if (node.class_type === 'ResolutionSelector') {
+    //   node.inputs.megapixels = megapixels;
+    // }
 
     // 3. Images
     if (node.class_type === 'LoadImage' && files.length > 0) {
@@ -333,52 +333,47 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
     }
 
 
-    if (enhance_prompt) {
-      // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
-      if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-        node.inputs.value = prompt;
-      }
-      
-    } else {
+    // if (enhance_prompt) {
+    //   // 4. Prompt (Removed the CLIPTextEncode overwrite to protect negative prompts and LLM links)
+    //   if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+    //     node.inputs.value = prompt;
+    //   }
 
-      // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
-      if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-        node.inputs.text = prompt_text;
-      }
-      // Continue to support the multiline nodes used in ltx-t2v/flf2v
-      if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-        node.inputs.value = prompt_text;
-      }
+    // } else {
 
-
+    //   // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
+    //   if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+    //     node.inputs.text = prompt_text;
+    //   }
+    //   // Continue to support the multiline nodes used in ltx-t2v/flf2v
+    //   if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+    //     node.inputs.value = prompt_text;
+    //   }
 
 
 
+    //   // if (class_type === 'CLIPTextEncode') {
 
 
-
-      // if (class_type === 'CLIPTextEncode') {
-
-
-      //   // Continue to support the multiline nodes used in ltx-t2v/flf2v
-      //   // if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-      //   //   node.inputs.value = prompt_text;
-      //   // }
-      //   // const l_title = title.toLowerCase();
+    //   //   // Continue to support the multiline nodes used in ltx-t2v/flf2v
+    //   //   // if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+    //   //   //   node.inputs.value = prompt_text;
+    //   //   // }
+    //   //   // const l_title = title.toLowerCase();
         
-      //   // // Guard against negative nodes, styles, or specific helper encoders
-      //   // const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
+    //   //   // // Guard against negative nodes, styles, or specific helper encoders
+    //   //   // const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
 
-      //   // // Match default ComfyUI title or explicitly tagged positive nodes
-      //   // const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
+    //   //   // // Match default ComfyUI title or explicitly tagged positive nodes
+    //   //   // const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
 
-      //   // if (!is_negative && is_positive) {
-      //   //   node.inputs.text = prompt;
-      //   // }
+    //   //   // if (!is_negative && is_positive) {
+    //   //   //   node.inputs.text = prompt;
+    //   //   // }
 
 
-      // }
-    }
+    //   // }
+    // }
 
 
     // if (class_type === 'CLIPTextEncode' && !title.toLowerCase().includes('negative')) {
@@ -386,7 +381,7 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
     // }
   }
 
-  // set_workflow_prompt(workflow, prompt);
+  set_workflow_prompt(workflow, prompt);
 
 
   return workflow;
@@ -424,19 +419,19 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
 //   return workflow;
 // };
 
-// const set_workflow_prompt = (workflow, prompt_text) => {
-//   for (const [, node] of Object.entries(workflow)) {
-//     // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
-//     if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-//       node.inputs.text = prompt_text;
-//     }
-//     // Continue to support the multiline nodes used in ltx-t2v/flf2v
-//     if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-//       node.inputs.value = prompt_text;
-//     }
-//   }
-//   return workflow;
-// };
+const set_workflow_prompt = (workflow, prompt_text) => {
+  for (const [, node] of Object.entries(workflow)) {
+    // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
+    if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
+      node.inputs.text = prompt_text;
+    }
+    // Continue to support the multiline nodes used in ltx-t2v/flf2v
+    if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+      node.inputs.value = prompt_text;
+    }
+  }
+  return workflow;
+};
 
 const execute_workflow = async (workflow) => {
   const response = await fetch(`${COMFY_HOST}/prompt`, {
@@ -549,8 +544,11 @@ const prepare_job = async (job_data) => {
   const fps = input?.fps ?? job_data.fps ?? 24;
   const prompt = input?.prompt ?? job_data.prompt ?? '';
   const resolution = input?.resolution ?? job_data.resolution ?? '720p';
-  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9'
-  const enhance_prompt = input?.enhance_prompt ?? job_data.enhance_prompt ?? 'false';
+  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9';
+  
+  // Strict Boolean evaluation to prevent string 'false' from becoming true
+  const raw_enhance = input?.enhance_prompt ?? job_data.enhance_prompt;
+  const enhance_prompt = raw_enhance === true || raw_enhance === 'true';
 
   const model_id = model || 'ltx-i2v';
   const workflow_path = WORKFLOW_MAP[model_id];
@@ -560,7 +558,7 @@ const prepare_job = async (job_data) => {
 
   const images = (Array.isArray(input?.images) && input.images.length > 0)
     ? input.images
-    : (input?.image_url ?? job_data.image_url ? [input?.image_url ?? job_data.image_url] : []);
+    : (input?.image_url ? [input.image_url] : (job_data.image_url ? [job_data.image_url] : []));
 
   const downloaded_filenames = [];
 
@@ -576,8 +574,7 @@ const prepare_job = async (job_data) => {
     await download_image(images[0], filename1);
     await download_image(images[1], filename2);
     downloaded_filenames.push(filename1, filename2);
-  } 
-  // ltx-t2v deliberately bypasses image downloading
+  }
 
   const raw_workflow = readFileSync(workflow_path, 'utf-8');
   let workflow = JSON.parse(raw_workflow);
@@ -586,16 +583,12 @@ const prepare_job = async (job_data) => {
     workflow, 
     model_id, 
     prompt, 
-    enhance_prompt,
+    enhance_prompt, 
     downloaded_filenames, 
     resolution, 
     duration_sec, 
     fps
   );
-
-  // workflow = update_workflow_duration(workflow, duration_sec, fps);
-  // workflow = set_workflow_image(workflow, downloaded_filenames);
-  // workflow = set_workflow_prompt(workflow, prompt);
 
   return {
     job_id,
@@ -609,6 +602,7 @@ const prepare_job = async (job_data) => {
       aspect_ratio,
       duration_sec,
       fps,
+      enhance_prompt,
       prompt
     }
   };
