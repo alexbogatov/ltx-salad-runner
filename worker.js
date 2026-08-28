@@ -338,12 +338,24 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
       if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
         node.inputs.value = prompt;
       }
+      
     } else {
 
       // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
       if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
         node.inputs.text = prompt_text;
       }
+      // Continue to support the multiline nodes used in ltx-t2v/flf2v
+      if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
+        node.inputs.value = prompt_text;
+      }
+
+
+
+
+
+
+
 
       // if (class_type === 'CLIPTextEncode') {
 

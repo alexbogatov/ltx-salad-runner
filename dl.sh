@@ -82,6 +82,3 @@ fetch_weight "${STORAGE_DIR}/latent_upscale_models/ltx-2.5-latent-spatial-upscal
 echo "===================================================="
 echo "✅ All models downloaded and cached successfully!"
 echo "===================================================="
-
-# Keep the pod alive so you can inspect files or attach later
-exec sleep infinity

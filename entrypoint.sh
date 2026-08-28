@@ -68,7 +68,6 @@ else
     echo "[Billing Warning] Could not initialize session tracking."
 fi
 
-
 # ==============================================================================
 # 3. Storage Setup & Symlinks
 # ==============================================================================
@@ -95,14 +94,15 @@ ln -sfn "${STORAGE_DIR}/latent_upscale_models" /app/ComfyUI/models/latent_upscal
 # ==============================================================================
 echo "[Startup] Executing dl.sh to download models..."
 
-# Find the exact folder this entrypoint script is running from
-SCRIPT_DIR=$(dirname "$0")
-
-if [ -f "$SCRIPT_DIR/dl.sh" ]; then
-    echo "[Startup] Found dl.sh in $SCRIPT_DIR, running now..."
-    bash "$SCRIPT_DIR/dl.sh"
+if [ -f "/app/dl.sh" ]; then
+    echo "[Startup] Running /app/dl.sh..."
+    bash /app/dl.sh
+elif [ -f "./dl.sh" ]; then
+    echo "[Startup] Running ./dl.sh..."
+    bash ./dl.sh
 else
-    echo "[Error] dl.sh not found in $SCRIPT_DIR! Models will not be downloaded."
+    echo "[Error] dl.sh not found in /app or current directory!"
+    exit 1
 fi
 
 # ==============================================================================
