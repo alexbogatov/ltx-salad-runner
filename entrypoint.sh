@@ -68,6 +68,7 @@ else
     echo "[Billing Warning] Could not initialize session tracking."
 fi
 
+
 # ==============================================================================
 # 3. Storage Setup & Symlinks
 # ==============================================================================
@@ -88,6 +89,21 @@ ln -sfn "${STORAGE_DIR}/diffusion_models" /app/ComfyUI/models/diffusion_models
 ln -sfn "${STORAGE_DIR}/text_encoders" /app/ComfyUI/models/text_encoders
 ln -sfn "${STORAGE_DIR}/vae" /app/ComfyUI/models/vae
 ln -sfn "${STORAGE_DIR}/latent_upscale_models" /app/ComfyUI/models/latent_upscale_models
+
+# ==============================================================================
+# 3.5 Download Models via dl.sh
+# ==============================================================================
+echo "[Startup] Executing dl.sh to download models..."
+
+# Find the exact folder this entrypoint script is running from
+SCRIPT_DIR=$(dirname "$0")
+
+if [ -f "$SCRIPT_DIR/dl.sh" ]; then
+    echo "[Startup] Found dl.sh in $SCRIPT_DIR, running now..."
+    bash "$SCRIPT_DIR/dl.sh"
+else
+    echo "[Error] dl.sh not found in $SCRIPT_DIR! Models will not be downloaded."
+fi
 
 # ==============================================================================
 # 4. Launch ComfyUI & Worker Daemon
