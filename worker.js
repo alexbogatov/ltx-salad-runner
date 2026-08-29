@@ -6,8 +6,6 @@ import { mkdir, writeFile, readdir, stat, unlink, rename } from 'fs/promises';
 import { join } from 'path';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
-const WORKER_SESSION_ID = process.env.WORKER_SESSION_ID;
-
 // ============================================
 // CONSTANTS & IDENTITY
 // ============================================
@@ -39,6 +37,7 @@ let total_generation_time_sec = 0;
 // API Configuration
 const API_BASE_URL = process.env.API_BASE_URL || 'https://api.runltx.com';
 const POLL_INTERVAL_SECONDS = parseInt(process.env.POLL_INTERVAL_SECONDS, 10) || 1;
+const MAX_RETRY_COUNT = parseInt(process.env.MAX_RETRY_COUNT, 10) || 3;
 const MAX_EMPTY_POLLS = 3;
 
 // Hyperstack Configuration
@@ -111,71 +110,71 @@ const format_job_log = (meta) => {
     ? `${short_prompt.slice(0, 47)}...` 
     : short_prompt;
 
-  return `[ ${meta.job_id} ] ${meta.resolution} | ${meta.aspect_ratio} | ${meta.duration_sec}s | ${meta.fps}fps | enhance: ${meta.enhance_prompt} | "${truncated_prompt}"`;
+  return `[ ${meta.job_id} ] ${meta.resolution} | ${meta.aspect_ratio} | ${meta.duration_sec}s | ${meta.fps}fps | "${truncated_prompt}"`;
 };
 
-// // ============================================
-// // Cloud Discovery & Teardown Handlers
-// // ============================================
-// const resolve_hyperstack_vm_id = async () => {
-//   if (HYPERSTACK_VM_ID !== null) return HYPERSTACK_VM_ID;
+// ============================================
+// Cloud Discovery & Teardown Handlers
+// ============================================
+const resolve_hyperstack_vm_id = async () => {
+  if (HYPERSTACK_VM_ID !== null) return HYPERSTACK_VM_ID;
 
-//   if (is_modal_runtime() || !HYPERSTACK_API_KEY) {
-//     HYPERSTACK_VM_ID = false;
-//     return null;
-//   }
+  if (is_modal_runtime() || !HYPERSTACK_API_KEY) {
+    HYPERSTACK_VM_ID = false;
+    return null;
+  }
 
-//   try {
-//     const res = await fetch(`${HYPERSTACK_API_URL}/core/virtual-machines`, {
-//       method: 'GET',
-//       headers: get_hyperstack_headers()
-//     });
+  try {
+    const res = await fetch(`${HYPERSTACK_API_URL}/core/virtual-machines`, {
+      method: 'GET',
+      headers: get_hyperstack_headers()
+    });
 
-//     if (!res.ok) {
-//       HYPERSTACK_VM_ID = false;
-//       return null;
-//     }
+    if (!res.ok) {
+      HYPERSTACK_VM_ID = false;
+      return null;
+    }
 
-//     const data = await res.json();
-//     const instances = data.instances || [];
-//     const match = instances.find((vm) => vm.name?.toLowerCase() === MACHINE_ID.toLowerCase());
+    const data = await res.json();
+    const instances = data.instances || [];
+    const match = instances.find((vm) => vm.name?.toLowerCase() === MACHINE_ID.toLowerCase());
 
-//     if (!match) {
-//       HYPERSTACK_VM_ID = false;
-//       return null;
-//     }
+    if (!match) {
+      HYPERSTACK_VM_ID = false;
+      return null;
+    }
 
-//     HYPERSTACK_VM_ID = match.id;
-//     return HYPERSTACK_VM_ID;
-//   } catch (err) {
-//     HYPERSTACK_VM_ID = false;
-//     return null;
-//   }
-// };
+    HYPERSTACK_VM_ID = match.id;
+    return HYPERSTACK_VM_ID;
+  } catch (err) {
+    HYPERSTACK_VM_ID = false;
+    return null;
+  }
+};
 
-// const hibernate_vm = async () => {
-//   try {
-//     const vm_id = await resolve_hyperstack_vm_id();
-//     if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
+const hibernate_vm = async () => {
+  try {
+    const vm_id = await resolve_hyperstack_vm_id();
+    if (!vm_id) throw new Error('Cannot hibernate: Hyperstack VM ID is missing.');
 
-//     const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
-//     const res = await fetch(url, {
-//       method: 'GET',
-//       headers: get_hyperstack_headers()
-//     });
+    const url = `${HYPERSTACK_API_URL}/core/virtual-machines/${vm_id}/hibernate?retain_ip=true`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: get_hyperstack_headers()
+    });
 
-//     if (!res.ok) {
-//       const err_text = await res.text();
-//       throw new Error(`HTTP ${res.status}: ${err_text}`);
-//     }
+    if (!res.ok) {
+      const err_text = await res.text();
+      throw new Error(`HTTP ${res.status}: ${err_text}`);
+    }
 
-//     const data = await res.json();
-//     return data;
-//   } catch (err) {
-//     console.error('[Hibernate Error]:', err.message);
-//     return null;
-//   }
-// };
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('[Hibernate Error]:', err.message);
+    return null;
+  }
+};
 
 const flush_pending_uploads = async () => {
   if (active_uploads.size > 0) {
@@ -187,18 +186,18 @@ const flush_pending_uploads = async () => {
 };
 
 const handle_inactivity_shutdown = async () => {
-  console.log('[Worker] Inactivity limit reached. Initiating teardown...');
-  await flush_pending_uploads();
+//   console.log('[Worker] Inactivity limit reached. Initiating teardown...');
+//   await flush_pending_uploads();
 
-  if (is_modal_runtime()) {
-    process.exit(0);
-  }
+//   if (is_modal_runtime()) {
+//     process.exit(0);
+//   }
 
-  const vm_id = await resolve_hyperstack_vm_id();
-  if (vm_id) {
-    // await hibernate_vm();
-    process.exit(0);
-  }
+//   const vm_id = await resolve_hyperstack_vm_id();
+//   if (vm_id) {
+//     await hibernate_vm();
+//     process.exit(0);
+//   }
 
   process.exit(0);
 };
@@ -239,7 +238,6 @@ const complete_job = async (job_id, output_url, generation_time_sec) => {
     method: 'POST',
     headers: get_api_headers(),
     body: JSON.stringify({
-      session_id: WORKER_SESSION_ID,
       job_id,
       output_url,
       generation_time_sec
@@ -257,7 +255,6 @@ const complete_job = async (job_id, output_url, generation_time_sec) => {
 const fail_job = async (job_id, error_message) => {
   const url = `${API_BASE_URL}/v1/worker/fail`;
   const response = await fetch(url, {
-    session_id: WORKER_SESSION_ID,
     method: 'POST',
     headers: get_api_headers(),
     body: JSON.stringify({
@@ -338,41 +335,20 @@ const mutate_workflow = (workflow, model, prompt, enhance_prompt, images, resolu
     //   if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
     //     node.inputs.value = prompt;
     //   }
-
     // } else {
-
-    //   // Forcefully overwrite the text input (severs upstream LLM nodes to save ~2s)
-    //   if (node.class_type === 'CLIPTextEncode' && (!node._meta?.title || !node._meta.title.toLowerCase().includes('negative'))) {
-    //     node.inputs.text = prompt_text;
-    //   }
-    //   // Continue to support the multiline nodes used in ltx-t2v/flf2v
-    //   if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-    //     node.inputs.value = prompt_text;
-    //   }
-
-
-
-    //   // if (class_type === 'CLIPTextEncode') {
-
-
-    //   //   // Continue to support the multiline nodes used in ltx-t2v/flf2v
-    //   //   // if (node.class_type === 'PrimitiveStringMultiline' && node._meta?.title === 'Prompt') {
-    //   //   //   node.inputs.value = prompt_text;
-    //   //   // }
-    //   //   // const l_title = title.toLowerCase();
+    //   if (class_type === 'CLIPTextEncode') {
+    //     const l_title = title.toLowerCase();
         
-    //   //   // // Guard against negative nodes, styles, or specific helper encoders
-    //   //   // const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
+    //     // Guard against negative nodes, styles, or specific helper encoders
+    //     const is_negative = l_title.includes('negative') || l_title.includes('unwanted') || l_title.includes('bad');
 
-    //   //   // // Match default ComfyUI title or explicitly tagged positive nodes
-    //   //   // const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
+    //     // Match default ComfyUI title or explicitly tagged positive nodes
+    //     const is_positive = l_title.includes('positive') || l_title.includes('prompt') || title === 'CLIP Text Encode (Prompt)' || title === '';
 
-    //   //   // if (!is_negative && is_positive) {
-    //   //   //   node.inputs.text = prompt;
-    //   //   // }
-
-
-    //   // }
+    //     if (!is_negative && is_positive) {
+    //       node.inputs.text = prompt;
+    //     }
+    //   }
     // }
 
 
@@ -544,11 +520,8 @@ const prepare_job = async (job_data) => {
   const fps = input?.fps ?? job_data.fps ?? 24;
   const prompt = input?.prompt ?? job_data.prompt ?? '';
   const resolution = input?.resolution ?? job_data.resolution ?? '720p';
-  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9';
-  
-  // Strict Boolean evaluation to prevent string 'false' from becoming true
-  const raw_enhance = input?.enhance_prompt ?? job_data.enhance_prompt;
-  const enhance_prompt = raw_enhance === true || raw_enhance === 'true';
+  const aspect_ratio = input?.aspect_ratio ?? job_data.aspect_ratio ?? '16:9'
+  const enhance_prompt = input?.enhance_prompt ?? job_data.enhance_prompt ?? 'false';
 
   const model_id = model || 'ltx-i2v';
   const workflow_path = WORKFLOW_MAP[model_id];
@@ -558,7 +531,7 @@ const prepare_job = async (job_data) => {
 
   const images = (Array.isArray(input?.images) && input.images.length > 0)
     ? input.images
-    : (input?.image_url ? [input.image_url] : (job_data.image_url ? [job_data.image_url] : []));
+    : (input?.image_url ?? job_data.image_url ? [input?.image_url ?? job_data.image_url] : []);
 
   const downloaded_filenames = [];
 
@@ -574,7 +547,8 @@ const prepare_job = async (job_data) => {
     await download_image(images[0], filename1);
     await download_image(images[1], filename2);
     downloaded_filenames.push(filename1, filename2);
-  }
+  } 
+  // ltx-t2v deliberately bypasses image downloading
 
   const raw_workflow = readFileSync(workflow_path, 'utf-8');
   let workflow = JSON.parse(raw_workflow);
@@ -583,12 +557,16 @@ const prepare_job = async (job_data) => {
     workflow, 
     model_id, 
     prompt, 
-    enhance_prompt, 
+    enhance_prompt,
     downloaded_filenames, 
     resolution, 
     duration_sec, 
     fps
   );
+
+  // workflow = update_workflow_duration(workflow, duration_sec, fps);
+  // workflow = set_workflow_image(workflow, downloaded_filenames);
+  // workflow = set_workflow_prompt(workflow, prompt);
 
   return {
     job_id,
@@ -602,7 +580,6 @@ const prepare_job = async (job_data) => {
       aspect_ratio,
       duration_sec,
       fps,
-      enhance_prompt,
       prompt
     }
   };
