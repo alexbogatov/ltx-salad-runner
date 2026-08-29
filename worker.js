@@ -220,17 +220,22 @@ const poll_for_job = async (job_type, model) => {
       })
     });
 
-    if (response.status === 404) return null;
+    // 404: Legitimate empty queue (safe for inactivity counter)
+    if (response.status === 404) {
+      return { status: 'empty' };
+    }
 
     if (!response.ok) {
       const err_text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${err_text}`);
+      console.error(`[API Poll Error]: HTTP ${response.status}: ${err_text}`);
+      return { status: 'error', error: `HTTP ${response.status}` };
     }
 
-    return await response.json();
+    const json = await response.json();
+    return { status: 'job', data: json.data };
   } catch (err) {
-    console.error('[API Poll Error]:', err.message);
-    return null;
+    console.error('[API Poll Error]: Network failure:', err.message);
+    return { status: 'error', error: err.message };
   }
 };
 
@@ -589,24 +594,24 @@ const prepare_job = async (job_data) => {
 };
 
 const prefetch_next_job = async (job_type, model) => {
-  try {
-    const result = await poll_for_job(job_type, model);
-    if (!result || !result.success || !result.data) {
-      return null;
-    }
+  const result = await poll_for_job(job_type, model);
+  
+  if (!result || result.status === 'error') {
+    return { status: 'error' };
+  }
 
-    try {
-      const prepared_job = await prepare_job(result.data);
-      console.log(`[Prefetched] ${format_job_log(prepared_job.meta)}`);
-      return prepared_job;
-    } catch (prep_err) {
-      console.error(`[Job ${result.data.job_id}] Preparation failed:`, prep_err.message);
-      try { await fail_job(result.data.job_id, prep_err.message); } catch (_) {}
-      return null;
-    }
-  } catch (err) {
-    console.error('[Pipeline] Prefetch error:', err.message);
-    return null;
+  if (result.status === 'empty' || !result.data) {
+    return { status: 'empty' };
+  }
+
+  try {
+    const prepared_job = await prepare_job(result.data);
+    console.log(`[Prefetched] ${format_job_log(prepared_job.meta)}`);
+    return { status: 'job', job: prepared_job };
+  } catch (prep_err) {
+    console.error(`[Job ${result.data.job_id}] Preparation failed:`, prep_err.message);
+    try { await fail_job(result.data.job_id, prep_err.message); } catch (_) {}
+    return { status: 'error' };
   }
 };
 
@@ -628,10 +633,9 @@ const worker_loop = async () => {
   await wait_for_comfy_ready();
 
   const job_type = process.env.JOB_TYPE || 'generate';
-  // If user passes a default fallback model, grab it - otherwise poll for all supported
   const model = process.env.MODEL || Object.keys(WORKFLOW_MAP).join(',');
 
-  let current_job = null;
+  let current_job_result = null;
   let prefetch_promise = null;
   let empty_poll_count = 0;
 
@@ -641,16 +645,23 @@ const worker_loop = async () => {
     try {
       // 1. Resolve or fetch the active job to render
       if (prefetch_promise) {
-        current_job = await prefetch_promise;
+        current_job_result = await prefetch_promise;
         prefetch_promise = null;
       }
 
-      if (!current_job) {
-        current_job = await prefetch_next_job(job_type, model);
+      if (!current_job_result) {
+        current_job_result = await prefetch_next_job(job_type, model);
       }
 
-      // 2. Inactivity tracking
-      if (!current_job) {
+      // 2. Handle 5xx Server / Network Errors (Do NOT trigger shutdown)
+      if (current_job_result.status === 'error') {
+        current_job_result = null;
+        await sleep(POLL_INTERVAL_SECONDS * 1000);
+        continue;
+      }
+
+      // 3. Inactivity tracking (ONLY on verified empty queue HTTP 404)
+      if (current_job_result.status === 'empty') {
         empty_poll_count++;
         console.log(`[Worker] No jobs available (${empty_poll_count}/${MAX_EMPTY_POLLS})`);
 
@@ -658,19 +669,22 @@ const worker_loop = async () => {
           await handle_inactivity_shutdown();
         }
 
+        current_job_result = null;
         await sleep(POLL_INTERVAL_SECONDS * 1000);
         continue;
       }
 
       empty_poll_count = 0;
-      
-      // Log job start with resolution, aspect ratio, duration, fps, and prompt
+      const current_job = current_job_result.job;
+      current_job_result = null;
+
+      // 4. Log job start
       console.log(`[GPU Render] ${format_job_log(current_job.meta)}`);
 
-      // 3. Immediately kick off prefetch for Job N+1 in parallel with GPU generation
+      // 5. Kick off prefetch for Job N+1 in parallel with GPU generation
       prefetch_promise = prefetch_next_job(job_type, model);
 
-      // 4. Render Job N
+      // 6. Render Job N
       let generation_time = 0;
       let render_success = false;
 
@@ -682,7 +696,7 @@ const worker_loop = async () => {
         try { await fail_job(current_job.job_id, render_err.message); } catch (_) {}
       }
 
-      // 5. Isolate MP4 & delegate upload to non-blocking background task
+      // 7. Isolate MP4 & delegate upload to non-blocking background task
       if (render_success) {
         const output_file = await find_latest_mp4(OUTPUT_DIR);
         if (output_file) {
@@ -702,9 +716,6 @@ const worker_loop = async () => {
           try { await fail_job(current_job.job_id, 'Generated MP4 missing'); } catch (_) {}
         }
       }
-
-      // Clear current job slot so next iteration immediately grabs the prefetched job
-      current_job = null;
 
     } catch (err) {
       console.error('[Worker] Unexpected error in main loop:', err.message);
