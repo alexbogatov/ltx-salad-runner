@@ -23,6 +23,7 @@ const STATS_FILE = '/tmp/worker_stats.json';
 // Machine identity and static secret from environment
 const MACHINE_ID = os.hostname();
 const WORKER_API_SECRET = process.env.WORKER_API_SECRET;
+const WORKER_SESSION_ID = process.env.WORKER_SESSION_ID || null;
 
 // Discovery cache: null = unprobed, false = not a hyperstack instance, string/number = VM ID
 let HYPERSTACK_VM_ID = null;
@@ -205,32 +206,6 @@ const handle_inactivity_shutdown = async () => {
 // ============================================
 // API Operations
 // ============================================
-const poll_for_job = async (job_type, model) => {
-  try {
-    const url = `${API_BASE_URL}/v1/worker/get`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: get_api_headers(),
-      body: JSON.stringify({
-        session_id: WORKER_SESSION_ID,
-        job_type,
-        models: model
-      })
-    });
-
-    if (response.status === 404) return null;
-
-    if (!response.ok) {
-      const err_text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${err_text}`);
-    }
-
-    return await response.json();
-  } catch (err) {
-    console.error('[API Poll Error]:', err.message);
-    return null;
-  }
-};
 
 const complete_job = async (job_id, output_url, generation_time_sec) => {
   const url = `${API_BASE_URL}/v1/worker/complete`;
@@ -238,6 +213,7 @@ const complete_job = async (job_id, output_url, generation_time_sec) => {
     method: 'POST',
     headers: get_api_headers(),
     body: JSON.stringify({
+      session_id: WORKER_SESSION_ID,
       job_id,
       output_url,
       generation_time_sec
@@ -258,6 +234,7 @@ const fail_job = async (job_id, error_message) => {
     method: 'POST',
     headers: get_api_headers(),
     body: JSON.stringify({
+      session_id: WORKER_SESSION_ID,
       job_id,
       error_message: typeof error_message === 'string' ? error_message : (error_message?.message || 'Worker failure')
     })
@@ -270,7 +247,6 @@ const fail_job = async (job_id, error_message) => {
 
   return await response.json();
 };
-
 // ============================================
 // ComfyUI Engine
 // ============================================

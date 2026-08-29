@@ -38,7 +38,6 @@ fetch_weight() {
 
     if [ ! -s "$target_path" ]; then
         echo "[Download] Fetching $label..."
-        [ -f /app/test-r2.js ] && node /app/test-r2.js "step-${step_name}-start.txt" "Starting download: ${label}" || true
         rm -f "$target_path" "${target_path}.tmp"
 
         if command -v aria2c &> /dev/null; then
@@ -49,7 +48,6 @@ fetch_weight() {
 
         mv "${target_path}.tmp" "$target_path"
         echo "[Download] $label completed."
-        [ -f /app/test-r2.js ] && node /app/test-r2.js "step-${step_name}-done.txt" "Completed download: ${label}" || true
     else
         echo "[Check] $label already cached on persistent disk."
     fi
