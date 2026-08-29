@@ -207,6 +207,33 @@ const handle_inactivity_shutdown = async () => {
 // API Operations
 // ============================================
 
+const poll_for_job = async (job_type, model) => {
+  try {
+    const url = `${API_BASE_URL}/v1/worker/get`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: get_api_headers(),
+      body: JSON.stringify({
+        session_id: WORKER_SESSION_ID,
+        job_type,
+        models: model
+      })
+    });
+
+    if (response.status === 404) return null;
+
+    if (!response.ok) {
+      const err_text = await response.text();
+      throw new Error(`HTTP ${response.status}: ${err_text}`);
+    }
+
+    return await response.json();
+  } catch (err) {
+    console.error('[API Poll Error]:', err.message);
+    return null;
+  }
+};
+
 const complete_job = async (job_id, output_url, generation_time_sec) => {
   const url = `${API_BASE_URL}/v1/worker/complete`;
   const response = await fetch(url, {
